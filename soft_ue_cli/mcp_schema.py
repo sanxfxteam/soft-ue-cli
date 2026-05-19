@@ -157,6 +157,12 @@ TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "required_remove": ["mode"],
     },
+    # run-automation: tests is a JSON array of strings; test_timeout maps to timeout in the bridge
+    "run-automation": {
+        "properties": {
+            "tests": {"type": "array", "description": "List of test names or wildcard patterns (e.g. [\"Angelscript.CppTests.*\"])"},
+        },
+    },
 }
 
 

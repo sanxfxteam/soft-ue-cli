@@ -2542,6 +2542,40 @@ def cmd_rewind_save(args: argparse.Namespace) -> None:
     _print_json(_run_tool("rewind-save", arguments))
 
 
+def cmd_run_automation(args: argparse.Namespace) -> None:
+    from .errors import BridgeError, ErrorKind, format_bug_nudge
+
+    test_timeout = args.test_timeout if args.test_timeout is not None else 60.0
+    arguments: dict = {"tests": args.tests, "timeout": test_timeout}
+
+    # HTTP timeout must outlast the test execution timeout; 30s buffer covers discovery + response
+    http_timeout = test_timeout + 30.0
+
+    try:
+        result = call_tool("run-automation", arguments, timeout=http_timeout)
+    except BridgeError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        if exc.kind == ErrorKind.UNEXPECTED:
+            print(format_bug_nudge(exc.tool_name, exc.message), file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        from .streak import record_success, should_nudge_testimonial, mark_nudged
+
+        record_success("run-automation")
+        if should_nudge_testimonial():
+            print(
+                '\nEnjoying soft-ue-cli? Share your experience:'
+                ' soft-ue-cli submit-testimonial --message "..."',
+                file=sys.stderr,
+            )
+            mark_nudged()
+    except Exception:
+        pass
+
+    _print_json(result)
+
+
 # -- Argument parser -----------------------------------------------------------
 
 
@@ -4982,6 +5016,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file path (default: auto-generated in Saved/Traces/)",
     )
     p_rw_save.set_defaults(func=cmd_rewind_save)
+
+    # ── run-automation ──
+    p_ra = sub.add_parser(
+        "run-automation",
+        help="Run Unreal automation tests and return structured results.",
+        description=(
+            "Executes automation tests via the Session Frontend and returns detailed results.\n"
+            "Accepts exact test names or wildcard patterns.\n\n"
+            "EXAMPLES:\n"
+            "  soft-ue-cli run-automation Angelscript.CppTests.AngelscriptCodeCoverage.*\n"
+            "  soft-ue-cli run-automation ProjectShiva.Abilities.* ProjectShiva.Core.*\n"
+            "  soft-ue-cli run-automation \"Angelscript.CppTests.*\" --test-timeout 120"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_ra.add_argument(
+        "tests",
+        nargs="+",
+        metavar="TEST",
+        help="Test names or wildcard patterns (e.g. Angelscript.CppTests.*)",
+    )
+    p_ra.add_argument(
+        "--test-timeout",
+        type=float,
+        metavar="SEC",
+        dest="test_timeout",
+        help=(
+            "Test execution timeout in seconds (default: 60). "
+            "The HTTP timeout is automatically set to test-timeout + 30s."
+        ),
+    )
+    p_ra.set_defaults(func=cmd_run_automation)
 
     return parser
 
