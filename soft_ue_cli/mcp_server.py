@@ -250,9 +250,13 @@ def create_server():
 
     mcp = FastMCP("soft-ue-cli")
 
+    from .whitelist import is_command_allowed
+
     # Register tools from argparse introspection
     for tool_def in extract_tools():
         name = tool_def["name"]
+        if not is_command_allowed(name):
+            continue
         description = tool_def["description"]
         params = tool_def["parameters"]
 

@@ -2614,6 +2614,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Intercept add_parser to suppress non-whitelisted commands from help output
+    from .whitelist import is_command_allowed, is_running_tests
+    original_add_parser = sub.add_parser
+
+    def filtered_add_parser(name, **kwargs):
+        if not is_running_tests() and not is_command_allowed(name):
+            import argparse
+            return argparse.ArgumentParser(add_help=False)
+        return original_add_parser(name, **kwargs)
+
+    sub.add_parser = filtered_add_parser
+
     # setup
     p_setup = sub.add_parser(
         "setup",
@@ -5061,6 +5073,12 @@ def main() -> None:
 
     parser = build_parser()
     args = parser.parse_args()
+
+    from .whitelist import is_command_allowed
+    command = getattr(args, "command", None)
+    if command and not is_command_allowed(command):
+        print(f"error: command '{command}' is not whitelisted", file=sys.stderr)
+        sys.exit(1)
 
     if args.server:
         os.environ["SOFT_UE_BRIDGE_URL"] = args.server
