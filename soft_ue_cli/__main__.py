@@ -170,6 +170,17 @@ def cmd_status(args: argparse.Namespace) -> None:
     _print_json(health_check())
 
 
+def cmd_shutdown(args: argparse.Namespace) -> None:
+    from .client import shutdown as client_shutdown
+    from .errors import BridgeError
+    try:
+        res = client_shutdown()
+        _print_json({"success": True, "message": "Editor shutdown requested successfully."})
+    except BridgeError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _launch_editor_for_wait(path: str) -> None:
     launch_path = Path(path).expanduser()
     if not launch_path.exists():
@@ -1189,7 +1200,11 @@ def cmd_trigger_live_coding(args: argparse.Namespace) -> None:
         arguments["module"] = args.module
     if args.plugin:
         arguments["plugin"] = args.plugin
-    _print_json(_run_tool("trigger-live-coding", arguments))
+    res = _run_tool("trigger-live-coding", arguments)
+    if "output" in res and res["output"]:
+        for line in res["output"]:
+            print(line)
+    _print_json(res)
 
 
 def cmd_reload_bridge_module(args: argparse.Namespace) -> None:
@@ -2545,11 +2560,12 @@ def cmd_rewind_save(args: argparse.Namespace) -> None:
 def cmd_run_automation(args: argparse.Namespace) -> None:
     from .errors import BridgeError, ErrorKind, format_bug_nudge
 
-    test_timeout = args.test_timeout if args.test_timeout is not None else 60.0
-    arguments: dict = {"tests": args.tests, "timeout": test_timeout}
-
-    # HTTP timeout must outlast the test execution timeout; 30s buffer covers discovery + response
-    http_timeout = test_timeout + 30.0
+    if args.test_timeout is None:
+        arguments: dict = {"tests": args.tests, "timeout_per_test": 60.0}
+        http_timeout = 1800.0
+    else:
+        arguments: dict = {"tests": args.tests, "timeout": args.test_timeout}
+        http_timeout = args.test_timeout + 30.0
 
     try:
         result = call_tool("run-automation", arguments, timeout=http_timeout)
@@ -2679,6 +2695,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sends a GET request to the bridge server and returns its health status.",
     )
     p_status.set_defaults(func=cmd_status)
+
+    # shutdown
+    p_shutdown = sub.add_parser(
+        "shutdown",
+        help="Request the Unreal Editor and bridge server to shut down and close.",
+        description="Sends a POST request to the bridge server asking it to shut down the Unreal Editor.",
+    )
+    p_shutdown.set_defaults(func=cmd_shutdown)
 
     # wait-for-ready
     p_wfr = sub.add_parser(

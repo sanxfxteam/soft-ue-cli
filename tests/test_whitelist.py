@@ -22,6 +22,7 @@ def test_whitelist_is_command_allowed():
     assert is_command_allowed("set-console-var") is True
     assert is_command_allowed("exec-console-command") is True
     assert is_command_allowed("run-automation") is True
+    assert is_command_allowed("shutdown") is True
 
     # Allowed infrastructure commands
     assert is_command_allowed("status") is True

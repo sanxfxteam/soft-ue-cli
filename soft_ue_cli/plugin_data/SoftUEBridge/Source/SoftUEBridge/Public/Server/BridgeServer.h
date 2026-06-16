@@ -45,6 +45,7 @@ private:
 	FBridgeResponse HandleInitialize(const FBridgeRequest& Request);
 	FBridgeResponse HandleToolsList(const FBridgeRequest& Request);
 	FBridgeResponse HandleToolsCall(const FBridgeRequest& Request);
+	void HandleToolsCallAsync(const FBridgeRequest& Request, const FHttpResultCallback& OnComplete);
 
 	void SendResponse(const FHttpResultCallback& OnComplete, const FBridgeResponse& Response, int32 StatusCode = 200);
 	void SendError(const FHttpResultCallback& OnComplete, int32 HttpStatus, int32 RpcCode, const FString& Message);

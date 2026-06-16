@@ -184,21 +184,88 @@ Running `soft-ue-cli mcp-serve` starts an MCP server over stdio. It auto-generat
 
 ---
 
+## Command Whitelisting
+
+To restrict execution inside production or sensitive environments, `soft-ue-cli` and `SoftUEBridge` enforce a **command whitelist**. 
+
+Only **whitelisted commands** can be executed via the CLI, the MCP server, or by sending HTTP requests directly to the bridge server. Any command/tool call not in the whitelist is rejected.
+
+### 🛡️ Whitelisted Commands (Allowed)
+These commands are fully permitted to run in both the CLI client and the Unreal Engine bridge server:
+
+| Category | Command | Description |
+|---|---|---|
+| **Setup & Diagnostics** | `status` | Health check -- returns server status |
+| | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
+| | `wait-for-ready` / `await-bridge` | Poll the same bridge health probe as `status` until it is ready |
+| | `shutdown` | Request the Unreal Editor and bridge server to shut down and close |
+| **Asset & Visual Capture** | `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
+| | `capture-viewport` | Capture the current viewport |
+| **Engine Control & Scripting** | `run-python-script` | Execute a Python script inside UE's embedded Python interpreter |
+| | `trigger-live-coding` | Trigger a Live Coding compile (hot reload) and print compiler logs |
+| | `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
+| | `get-console-var` | Read the value of a console variable (CVar) |
+| | `set-console-var` | Set a console variable value |
+| | `run-automation` | Run a list of automation tests via the Session Frontend and return the results |
+
 ## Complete Command Reference
 
 Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <command> --help` for detailed options.
 
-### Setup and Diagnostics
+### 🛡️ Allowed (Whitelisted) Commands
+These commands are fully permitted to run in whitelisted mode (both in the CLI client/MCP server and enforced by the `SoftUEBridge` C++ plugin).
+
+#### Setup and Diagnostics
+
+| Command | Description |
+|---------|-------------|
+| `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
+| `status` | Health check -- returns server status |
+| `wait-for-ready` | Poll the same bridge health probe as `status` until it is ready (`await-bridge` alias) |
+| `shutdown` | Request the Unreal Editor and bridge server to shut down and close cleanly |
+
+#### Play-In-Editor & Scripting
+
+| Command | Description |
+|---------|-------------|
+| `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
+| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path` and exposing optional PIE-world helpers |
+
+#### Visual Capture
+
+| Command | Description |
+|---------|-------------|
+| `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
+| `capture-viewport` | Capture the current viewport (auto-detects PIE, standalone, or editor) |
+
+#### Logging, CVars, & Live Coding
+
+| Command | Description |
+|---------|-------------|
+| `get-console-var` | Read the value of a console variable (CVar) |
+| `set-console-var` | Set a console variable value |
+| `trigger-live-coding` | Trigger a Live Coding compile (hot reload) and print compiler logs; warns on risky reflected header changes and returns full-build guidance when Unreal cancels unsupported changes |
+
+#### Automation Testing
+
+| Command | Description |
+|---------|-------------|
+| `run-automation` | Run a list of automation tests via the Session Frontend and return the results. <br><br>**Self-Healing Test Discovery**: If test discovery reports zero tests (a common issue where the Automation Controller is uninitialized), the bridge will automatically bootstrap the Automation Controller using the `Automation RunTests` console command once to register local workers and restart discovery.<br><br>**Timeout Behavior**: Runs with a dynamic timeout of **60 seconds per matched test** by default. Use `--test-timeout <seconds>` to override this with a strict overall total timeout. |
+
+---
+
+### 🚫 Blocked / Restricted Commands (Blacklisted)
+These commands are blocked/restricted when whitelisted mode is active (enforced on the bridge server).
+
+#### Offline Setup & Diagnostic Commands
 
 | Command | Description |
 |---------|-------------|
 | `setup` | Copy SoftUEBridge plugin into a UE project |
-| `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
-| `status` | Health check -- returns server status |
-| `wait-for-ready` | Poll the same bridge health probe as `status` until it is ready (`await-bridge` alias) |
 | `project-info` | Get project name, engine version, target platforms, and module info |
+| `mcp-serve` | Run as an MCP (Model Context Protocol) server over stdio |
 
-### Actor and Level Operations
+#### Actor and Level Operations
 
 | Command | Description |
 |---------|-------------|
@@ -210,7 +277,7 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `get-property` | Read a `UPROPERTY` value from an actor or component using reflection |
 | `add-component` | Add a component to an existing actor |
 
-### Blueprint Inspection and Editing
+#### Blueprint Inspection and Editing
 
 | Command | Description |
 |---------|-------------|
@@ -233,26 +300,26 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `save-asset` | Save a modified asset to disk (with optional `--checkout` for source control) |
 | `set-node-property` | Set properties on a graph node by GUID (UPROPERTY, inner structs, pin defaults) |
 
-### Asset Management
+#### Asset Management
 
 | Command | Description |
 |---------|-------------|
 | `query-asset` | Search the Content Browser by name, class, or path -- also inspect DataTables and map `WorldSettings` such as `DefaultGameMode` |
 | `query-enum` | Inspect a UserDefinedEnum asset -- authored names, display names, tooltips, numeric values |
 | `query-struct` | Inspect a UserDefinedStruct asset -- authored member names, defaults, and metadata |
-| `inspect-customizable-object-graph` | Inspect a Mutable/CustomizableObject graph and return graphs, nodes, pins, edges, and derived node roles |
+| `inspect-customizable-object-graph` | Inspect a CustomizableObject graph (Mutable) |
 | `inspect-mutable-parameters` | Derive structured Mutable parameter metadata such as groups, defaults, runtime enum options, tags, and related graph links |
 | `inspect-mutable-diagnostics` | Report Mutable plugin availability and best-effort capability/runtime diagnostics for a target asset |
-| `add-co-node` | Add a node to a Mutable/CustomizableObject graph by class name, with optional position and properties |
-| `add-co-parameter` | Add a common Mutable parameter node such as float, color, enum, projector, texture, transform, or mesh |
+| `add-co-node` | Add a node to a CustomizableObject graph |
+| `add-co-parameter` | Add a common Mutable parameter node |
 | `add-co-mesh-option` | Add a skeletal or static mesh option node and assign its mesh reference |
 | `set-co-base-mesh` | Set the mesh reference on an existing CustomizableObject node |
-| `add-co-group-child` | Connect a child object node into an object group using Mutable's default `Object` -> `Objects` pins |
+| `add-co-group-child` | Connect a child object node into an object group |
 | `set-co-node-property` | Set reflected properties or matching pin defaults on a CustomizableObject graph node |
-| `connect-co-pins` | Connect two CustomizableObject graph pins by node GUID and pin name, with one automatic pin regeneration retry by default |
-| `regenerate-co-node-pins` | Regenerate pins for one Mutable/CustomizableObject graph node and return the refreshed pin list |
+| `connect-co-pins` | Connect two CustomizableObject graph pins by node GUID and pin name |
+| `regenerate-co-node-pins` | Regenerate pins for one CustomizableObject graph node |
 | `compile-co` | Compile a CustomizableObject asset and return structured status |
-| `remove-co-node` | Remove a CustomizableObject graph node by GUID, object path, object name, or title |
+| `remove-co-node` | Remove a CustomizableObject graph node by GUID |
 | `create-asset` | Create new Blueprint, Material, DataTable, World (Level), or other asset types |
 | `delete-asset` | Delete an asset |
 | `release-asset-lock` | Best-effort close editors and release UE file handles for a specific asset |
@@ -262,64 +329,52 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `open-asset` | Open an asset in the editor |
 | `find-references` | Find assets, variables, or functions referencing a given asset |
 
-### Material Inspection
+#### Material Inspection
 
 | Command | Description |
 |---------|-------------|
 | `query-material` | Inspect Material, Material Instance, or Material Function -- parameters, nodes, connections, `--parent-chain` |
 | `query-mpc` | Read or write Material Parameter Collection scalar/vector values |
 
-### Class and Type Inspection
+#### Class and Type Inspection
 
 | Command | Description |
 |---------|-------------|
 | `class-hierarchy` | Inspect class inheritance chains -- ancestors, descendants, or both |
 | `validate-class-path` | Verify that a soft class path exists, loads, and resolves to a `UClass` |
 
-### Play-In-Editor (PIE) Control
+#### Play-In-Editor (PIE) Control
 
 | Command | Description |
 |---------|-------------|
-| `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
 | `pie-session` | Start, stop, pause, resume PIE -- also query actor state during play |
 | `pie-tick` | Start PIE if needed and advance the world deterministically by frame count |
 | `inspect-anim-instance` | Snapshot a target actor's live `UAnimInstance` state, montages, slot activity, and blend weights |
 | `inspect-pawn-possession` | Inspect controller/pawn links, AI auto-possession, and hidden state in a running world |
 | `trigger-input` | Send input events to a running game (PIE or packaged build) |
 
-### Screenshot and Visual Capture
-
-| Command | Description |
-|---------|-------------|
-| `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
-| `capture-viewport` | Capture the current viewport (auto-detects PIE, standalone, or editor) |
-| `set-viewport-camera` | Set editor viewport camera position, rotation, or preset view (top/front/right/perspective) |
-
-### Logging and Console Variables
+#### Logging
 
 | Command | Description |
 |---------|-------------|
 | `get-logs` | Read the UE output log with substring filters, cursors, and follow mode |
-| `get-console-var` | Read the value of a console variable (CVar) |
-| `set-console-var` | Set a console variable value |
 
-### Gameplay Tags
+#### Gameplay Tags
 
 | Command | Description |
 |---------|-------------|
 | `request-gameplay-tag` | Resolve a registered GameplayTag by name and return validity/export text |
 | `reload-gameplay-tags` | Reload GameplayTags settings and refresh tag tables where supported |
 
-### Python Scripting in UE
+#### Python Scripting (Library Management)
 
 | Command | Description |
 |---------|-------------|
-| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path` and exposing optional PIE-world helpers |
 | `save-script` | Save a reusable Python script to the local script library |
 | `list-scripts` | List all saved Python scripts |
 | `delete-script` | Delete a saved script |
 
-### StateTree Editing
+#### StateTree Editing
 
 | Command | Description |
 |---------|-------------|
@@ -329,7 +384,7 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `add-statetree-transition` | Add a transition between StateTree states |
 | `remove-statetree-state` | Remove a state from a StateTree |
 
-### Widget Blueprint Inspection
+#### Widget Blueprint Inspection
 
 | Command | Description |
 |---------|-------------|
@@ -337,13 +392,13 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `inspect-runtime-widgets` | Inspect live UMG widget geometry during PIE sessions |
 | `add-widget` | Add a widget to a Widget Blueprint |
 
-### DataTable Editing
+#### DataTable Editing
 
 | Command | Description |
 |---------|-------------|
 | `add-datatable-row` | Add or update a row in a DataTable asset from a JSON object keyed by row struct field name |
 
-### Performance Profiling (UE Insights)
+#### Performance Profiling (UE Insights)
 
 | Command | Description |
 |---------|-------------|
@@ -351,9 +406,7 @@ Every command is available via `soft-ue-cli <command>`. Run `soft-ue-cli <comman
 | `insights-list-traces` | List available trace files |
 | `insights-analyze` | Analyze a trace file for CPU, GPU, or memory hotspots |
 
-### Rewind Debugger (Animation Debugging)
-
-Requires the **Animation Insights (GameplayInsights)** plugin enabled in Edit > Plugins.
+#### Rewind Debugger (Animation Debugging)
 
 | Command | Description |
 |---------|-------------|
@@ -365,15 +418,15 @@ Requires the **Animation Insights (GameplayInsights)** plugin enabled in Edit > 
 | `rewind-snapshot` | Detailed animation state at a specific time or frame — the time-travel equivalent of `inspect-anim-instance` |
 | `rewind-save` | Save the in-memory recording to a `.utrace` file |
 
-### Build and Live Coding
+#### Build & Infrastructure Control
 
 | Command | Description |
 |---------|-------------|
 | `build-and-relaunch` | Trigger a full C++ rebuild and optionally relaunch the editor (`--wait` monitors staged progress and reports timeout diagnostics) |
-| `trigger-live-coding` | Trigger a Live Coding compile (hot reload); warns on risky reflected header changes and returns full-build guidance when Unreal cancels unsupported changes |
 | `reload-bridge-module` | Reload the bridge editor module from disk without a full editor restart |
+| `set-viewport-camera` | Set editor viewport camera position, rotation, or preset view (top/front/right/perspective) |
 
-### Skills (LLM Workflow Prompts)
+#### Skills (LLM Workflow Prompts)
 
 | Command | Description |
 |---------|-------------|
@@ -620,6 +673,12 @@ soft-ue-cli insights-capture stop
 soft-ue-cli insights-analyze latest --analysis-type cpu
 ```
 
+### Shut down the Unreal Editor
+
+```bash
+soft-ue-cli shutdown
+```
+
 ### Use as an MCP server (Claude Desktop, Cursor, etc.)
 
 ```bash
@@ -698,7 +757,35 @@ Developers who need the bridge set `SOFT_UE_BRIDGE=1` in their environment. Ever
 ```bash
 git clone https://github.com/softdaddy-o/soft-ue-cli
 cd soft-ue-cli
+```
+
+### Rebuilding and Relinking (Editable Mode)
+To install/relink the package in editable development mode so any code changes take effect immediately:
+
+```bash
+# Install package in editable mode
 pip install -e .
+
+# Or with MCP server support:
+pip install -e .[mcp]
+```
+
+### Building Distribution Packages
+To build wheels (`.whl`) and source archives (`.tar.gz`) for packaging:
+
+```bash
+# Build via Python PEP 517 builder
+pip install build
+python -m build
+
+# Or if you have the Hatch CLI tool installed
+hatch build
+```
+
+### Running Tests
+To run the full unit test suite:
+
+```bash
 pytest -v
 ```
 

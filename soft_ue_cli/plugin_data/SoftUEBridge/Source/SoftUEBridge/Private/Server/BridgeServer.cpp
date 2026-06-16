@@ -11,6 +11,8 @@
 #include "Misc/Guid.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "HAL/PlatformMisc.h"
+#include "Containers/Ticker.h"
 
 namespace
 {
@@ -22,6 +24,21 @@ namespace
 		FUnattendedScriptGuard()  : bPrevious(GIsRunningUnattendedScript) { GIsRunningUnattendedScript = true; }
 		~FUnattendedScriptGuard() { GIsRunningUnattendedScript = bPrevious; }
 	};
+
+	bool IsToolWhitelisted(const FString& ToolName)
+	{
+		static const TSet<FString> Whitelist = {
+			TEXT("run-python-script"),
+			TEXT("trigger-live-coding"),
+			TEXT("capture-screenshot"),
+			TEXT("capture-viewport"),
+			TEXT("get-console-var"),
+			TEXT("set-console-var"),
+			TEXT("exec-console-command"),
+			TEXT("run-automation")
+		};
+		return Whitelist.Contains(ToolName);
+	}
 }
 
 FBridgeServer::FBridgeServer() = default;
@@ -200,6 +217,23 @@ bool FBridgeServer::HandleRequest(const FHttpServerRequest& Request, const FHttp
 	// Execute on game thread (UE API requires it)
 	AsyncTask(ENamedThreads::GameThread, [this, BridgeReq, OnComplete]()
 	{
+		// For async tools, defer the HTTP response — HandleToolsCallAsync
+		// captures OnComplete and calls it when the tool finishes.
+		if (BridgeReq.ParsedMethod == EBridgeMethod::ToolsCall && !BridgeReq.IsNotification())
+		{
+			// Check if the target tool is async before committing to the async path
+			FString ToolName;
+			if (BridgeReq.Params.IsValid() && BridgeReq.Params->TryGetStringField(TEXT("name"), ToolName))
+			{
+				UBridgeToolBase* Tool = FBridgeToolRegistry::Get().FindTool(ToolName);
+				if (Tool && Tool->IsAsync())
+				{
+					HandleToolsCallAsync(BridgeReq, OnComplete);
+					return;
+				}
+			}
+		}
+
 		FBridgeResponse Response;
 #if PLATFORM_EXCEPTIONS_DISABLED
 		Response = ProcessRequest(BridgeReq);
@@ -245,6 +279,11 @@ FBridgeResponse FBridgeServer::ProcessRequest(const FBridgeRequest& Request)
 		return FBridgeResponse::Success(Request.Id, MakeShareable(new FJsonObject));
 
 	case EBridgeMethod::Shutdown:
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float DeltaTime) -> bool
+		{
+			FPlatformMisc::RequestExit(false);
+			return false; // Don't repeat
+		}), 0.5f);
 		return FBridgeResponse::Success(Request.Id, MakeShareable(new FJsonObject));
 
 	case EBridgeMethod::ToolsList:
@@ -284,7 +323,10 @@ FBridgeResponse FBridgeServer::HandleToolsList(const FBridgeRequest& Request)
 	TArray<TSharedPtr<FJsonValue>> ToolsArr;
 	for (const FBridgeToolDefinition& Tool : Tools)
 	{
-		ToolsArr.Add(MakeShareable(new FJsonValueObject(Tool.ToJson())));
+		if (IsToolWhitelisted(Tool.Name))
+		{
+			ToolsArr.Add(MakeShareable(new FJsonValueObject(Tool.ToJson())));
+		}
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
@@ -356,6 +398,11 @@ FBridgeResponse FBridgeServer::HandleToolsCall(const FBridgeRequest& Request)
 		return FBridgeResponse::Error(Request.Id, EBridgeErrorCode::InvalidParams, TEXT("Missing tool name"));
 	}
 
+	if (!IsToolWhitelisted(ToolName))
+	{
+		return FBridgeResponse::Error(Request.Id, EBridgeErrorCode::InvalidRequest, FString::Printf(TEXT("Tool '%s' is not whitelisted"), *ToolName));
+	}
+
 	TSharedPtr<FJsonObject> Arguments;
 	const TSharedPtr<FJsonObject>* ArgsObj;
 	if (Request.Params->TryGetObjectField(TEXT("arguments"), ArgsObj))
@@ -394,6 +441,55 @@ FBridgeResponse FBridgeServer::HandleToolsCall(const FBridgeRequest& Request)
 #endif
 
 	return FBridgeResponse::Success(Request.Id, ToolResult.ToJson());
+}
+
+void FBridgeServer::HandleToolsCallAsync(const FBridgeRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	if (!Request.Params.IsValid())
+	{
+		SendResponse(OnComplete, FBridgeResponse::Error(Request.Id, EBridgeErrorCode::InvalidParams, TEXT("Missing params")));
+		return;
+	}
+
+	FString ToolName;
+	if (!Request.Params->TryGetStringField(TEXT("name"), ToolName))
+	{
+		SendResponse(OnComplete, FBridgeResponse::Error(Request.Id, EBridgeErrorCode::InvalidParams, TEXT("Missing tool name")));
+		return;
+	}
+
+	if (!IsToolWhitelisted(ToolName))
+	{
+		SendResponse(OnComplete, FBridgeResponse::Error(Request.Id, EBridgeErrorCode::InvalidRequest, FString::Printf(TEXT("Tool '%s' is not whitelisted"), *ToolName)));
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Arguments;
+	const TSharedPtr<FJsonObject>* ArgsObj;
+	if (Request.Params->TryGetObjectField(TEXT("arguments"), ArgsObj))
+	{
+		Arguments = *ArgsObj;
+	}
+	else
+	{
+		Arguments = MakeShareable(new FJsonObject);
+	}
+
+	FBridgeToolContext Context;
+	Context.RequestId = Request.Id;
+
+	// Suppress modal dialogs during tool execution
+	GIsRunningUnattendedScript = true;
+
+	// Capture request ID and this pointer for the completion callback
+	FString RequestId = Request.Id;
+	FBridgeToolRegistry::Get().ExecuteToolAsync(ToolName, Arguments, Context,
+		FOnBridgeToolComplete::CreateLambda([this, OnComplete, RequestId](FBridgeToolResult ToolResult)
+		{
+			GIsRunningUnattendedScript = false;
+			FBridgeResponse Response = FBridgeResponse::Success(RequestId, ToolResult.ToJson());
+			SendResponse(OnComplete, Response);
+		}));
 }
 
 void FBridgeServer::SendResponse(const FHttpResultCallback& OnComplete, const FBridgeResponse& Response, int32 StatusCode)

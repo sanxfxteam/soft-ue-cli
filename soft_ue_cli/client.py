@@ -166,3 +166,42 @@ def health_check(timeout: float = 5.0) -> dict[str, Any]:
         return response.json()
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def shutdown(timeout: float | None = None) -> dict[str, Any]:
+    """Send shutdown request to SoftUEBridge server."""
+    from .errors import BridgeError, ErrorKind
+
+    url = get_server_url()
+    endpoint = f"{url}/bridge"
+    timeout = timeout if timeout is not None else 5.0
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": str(next(_id_counter)),
+        "method": "shutdown",
+        "params": {},
+    }
+
+    try:
+        response = httpx.post(endpoint, json=payload, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+        if "error" in data:
+            err = data["error"]
+            raise BridgeError(
+                kind=ErrorKind.EXPECTED,
+                message=str(err.get("message", err)),
+                tool_name="shutdown",
+                arguments={},
+            )
+        return data.get("result", {})
+    except Exception as exc:
+        if isinstance(exc, BridgeError):
+            raise exc
+        raise BridgeError(
+            kind=ErrorKind.EXPECTED,
+            message=f"Shutdown failed: {exc}",
+            tool_name="shutdown",
+            arguments={},
+        )

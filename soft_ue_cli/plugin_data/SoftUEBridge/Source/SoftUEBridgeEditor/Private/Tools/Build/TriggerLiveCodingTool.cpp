@@ -11,6 +11,7 @@
 // Live Coding module (Windows only)
 #if PLATFORM_WINDOWS
 	#include "ILiveCodingModule.h"
+	#include "Tools/GetLogsTool.h"
 #endif
 
 #if PLATFORM_WINDOWS
@@ -238,6 +239,7 @@ FBridgeToolResult UTriggerLiveCodingTool::ExecuteSynchronous(ILiveCodingModule* 
 
 	// Record start time for log filtering
 	const double StartTime = FPlatformTime::Seconds();
+	const uint64 StartCursor = FBridgeLogCapture::Get().GetLatestCursor();
 
 	// Use WaitForCompletion flag - this blocks until compilation finishes
 	ELiveCodingCompileResult CompileResult;
@@ -245,10 +247,21 @@ FBridgeToolResult UTriggerLiveCodingTool::ExecuteSynchronous(ILiveCodingModule* 
 
 	const double CompilationTime = FPlatformTime::Seconds() - StartTime;
 
+	// Capture new logs since StartCursor
+	TArray<FBridgeCapturedLogEntry> CapturedLogs = FBridgeLogCapture::Get().GetEntries(0, TEXT(""), TEXT(""), FString::Printf(TEXT("%llu"), StartCursor));
+
 	// Build result based on CompileResult
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
 	Result->SetNumberField(TEXT("compilation_time_seconds"), CompilationTime);
 	Result->SetStringField(TEXT("shortcut"), TEXT("Ctrl+Alt+F11"));
+
+	// Convert captured logs to JSON array
+	TArray<TSharedPtr<FJsonValue>> LogLines;
+	for (const FBridgeCapturedLogEntry& Entry : CapturedLogs)
+	{
+		LogLines.Add(MakeShareable(new FJsonValueString(Entry.Line)));
+	}
+	Result->SetArrayField(TEXT("output"), LogLines);
 
 	// Map ELiveCodingCompileResult to response
 	FString StatusStr;

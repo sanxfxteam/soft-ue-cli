@@ -16,7 +16,7 @@ struct FBridgeCapturedLogEntry
 };
 
 /** Thread-safe ring buffer capturing UE log output */
-class FBridgeLogCapture : public FOutputDevice
+class SOFTUEBRIDGE_API FBridgeLogCapture : public FOutputDevice
 {
 public:
 	static constexpr int32 MaxLines = 2000;

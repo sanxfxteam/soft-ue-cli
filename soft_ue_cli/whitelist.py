@@ -13,6 +13,7 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "set-console-var",
     "exec-console-command",
     "run-automation",
+    "shutdown",
 
     # Allowed infrastructure / diagnostic commands
     "status",
