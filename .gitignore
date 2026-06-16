@@ -8,3 +8,7 @@ dist/
 .coverage
 *.so
 *.dylib
+
+# SoftUEBridge plugin is a junction to the canonical copy in the ProjectShiva
+# game repo (Plugins/SoftUEBridge). It is not tracked here to avoid drift.
+/soft_ue_cli/plugin_data/SoftUEBridge/

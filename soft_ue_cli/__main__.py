@@ -1201,10 +1201,28 @@ def cmd_trigger_live_coding(args: argparse.Namespace) -> None:
     if args.plugin:
         arguments["plugin"] = args.plugin
     res = _run_tool("trigger-live-coding", arguments)
+    
+    if getattr(args, "json", False):
+        _print_json(res)
+        if not res.get("success", False):
+            sys.exit(1)
+        return
+
+    # Print log lines if compile output was captured
     if "output" in res and res["output"]:
         for line in res["output"]:
             print(line)
-    _print_json(res)
+
+    # Print human-readable summary
+    msg = res.get("message", "No message")
+    duration = res.get("compilation_time_seconds")
+    duration_str = f" in {duration:.1f}s" if duration is not None else ""
+    
+    if res.get("success", False):
+        print(f"Live Coding: SUCCESS - {msg}{duration_str}")
+    else:
+        print(f"Live Coding: FAILED - {msg}{duration_str}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_reload_bridge_module(args: argparse.Namespace) -> None:
@@ -2589,7 +2607,48 @@ def cmd_run_automation(args: argparse.Namespace) -> None:
     except Exception:
         pass
 
-    _print_json(result)
+    if getattr(args, "json", False):
+        _print_json(result)
+        if not result.get("success", False):
+            sys.exit(1)
+        return
+
+    reports = result.get("reports", [])
+    for r in reports:
+        test_name = r.get("full_path") or r.get("test_name") or "Unknown"
+        state = r.get("state", "Unknown")
+        duration = r.get("duration_seconds", 0.0)
+        
+        if state == "Success":
+            print(f"[PASS] {test_name} ({duration:.3f}s)")
+        elif state == "Failure":
+            print(f"[FAIL] {test_name} ({duration:.3f}s)")
+            for entry in r.get("entries", []):
+                msg = entry.get("message", "")
+                entry_type = entry.get("type", "Info")
+                filename = entry.get("filename", "")
+                line = entry.get("line_number", 0)
+                
+                loc = f" ({filename}:{line})" if filename else ""
+                print(f"  - [{entry_type}] {msg}{loc}")
+        else:
+            print(f"[{state.upper()}] {test_name} ({duration:.3f}s)")
+
+    print("-" * 80)
+    passed = result.get("passed_tests", 0)
+    failed = result.get("failed_tests", 0)
+    total = result.get("total_tests", 0)
+    timed_out = result.get("timed_out", False)
+    
+    if timed_out:
+        print(f"Result: TIMED OUT (Total tests: {total}, Passed: {passed}, Failed: {failed})")
+    elif result.get("success", False):
+        print(f"Result: SUCCESS ({passed}/{total} passed)")
+    else:
+        print(f"Result: FAILED ({passed}/{total} passed, {failed} failed)")
+
+    if not result.get("success", False):
+        sys.exit(1)
 
 
 # -- Argument parser -----------------------------------------------------------
@@ -3629,6 +3688,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_tlc.add_argument("--module", help="Limit reflected-header safety checks to a module, e.g. SoftUEBridgeEditor")
     p_tlc.add_argument("--plugin", help="Limit reflected-header safety checks to a plugin directory, e.g. SoftUEBridge")
+    p_tlc.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON results",
+    )
     p_tlc.set_defaults(func=cmd_trigger_live_coding)
 
     p_rbm = sub.add_parser(
@@ -5082,6 +5146,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Test execution timeout in seconds (default: 60). "
             "The HTTP timeout is automatically set to test-timeout + 30s."
         ),
+    )
+    p_ra.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON results",
     )
     p_ra.set_defaults(func=cmd_run_automation)
 

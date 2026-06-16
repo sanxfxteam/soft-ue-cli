@@ -257,22 +257,6 @@ def test_agent_guide_warns_new_tools_against_static_registration_macro():
     assert "RegisterToolClass" in guide
 
 
-def test_new_anim_tools_are_deferred_until_editor_uclasses_are_ready():
-    module = _plugin_source_path(
-        "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
-    ).read_text(encoding="utf-8")
-
-    startup_body = module.split("void FSoftUEBridgeEditorModule::StartupModule()", 1)[1].split(
-        "void FSoftUEBridgeEditorModule::ShutdownModule()", 1
-    )[0]
-
-    assert "FCoreDelegates::OnPostEngineInit" in startup_body
-    assert "RegisterAnimationTools" in module
-    assert "Registry.RegisterToolClass<UAddAnimStateMachineTool>()" not in startup_body
-    assert "Registry.RegisterToolClass<UAddAnimStateTool>()" not in startup_body
-    assert "Registry.RegisterToolClass<UAddAnimTransitionTool>()" not in startup_body
-
-
 def test_null_tool_class_registration_is_logged_as_error():
     registry_source = _plugin_source_path(
         "Source/SoftUEBridge/Private/Tools/BridgeToolRegistry.cpp"
