@@ -1971,7 +1971,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     plugin_dest = project_path / "Plugins" / "SoftUEBridge"
     claude_md = project_path / "CLAUDE.md"
-    cli_cmd = f"{sys.executable} -m soft_ue_cli"
+    if getattr(sys, "frozen", False):
+        cli_cmd = Path(sys.executable).name
+    else:
+        cli_cmd = f"{sys.executable} -m soft_ue_cli"
 
     print(
         f"Install the SoftUEBridge UE plugin into the project at {project_path}:\n\n"
