@@ -653,7 +653,7 @@ def test_cmd_wait_for_ready_returns_when_bridge_health_succeeds(capsys, monkeypa
         "soft_ue_cli.__main__.health_check",
         lambda **_kwargs: {"running": True, "name": "soft-ue-bridge"},
     )
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:8080")
+    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
     monkeypatch.setattr("time.monotonic", lambda: 0.0)
 
     cmd_wait_for_ready(args)
@@ -661,7 +661,7 @@ def test_cmd_wait_for_ready_returns_when_bridge_health_succeeds(capsys, monkeypa
     result = json.loads(capsys.readouterr().out)
     assert result["success"] is True
     assert result["status"] == "ready"
-    assert result["server_url"] == "http://127.0.0.1:8080"
+    assert result["server_url"] == "http://127.0.0.1:18080"
     assert result["health"]["running"] is True
 
 
@@ -674,7 +674,7 @@ def test_cmd_wait_for_ready_timeout_reports_last_error(capsys, monkeypatch):
         clock["now"] += seconds
 
     monkeypatch.setattr("soft_ue_cli.__main__.health_check", lambda **_kwargs: {"error": "connection refused"})
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:8080")
+    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
     monkeypatch.setattr("time.sleep", fake_sleep)
     monkeypatch.setattr("time.monotonic", lambda: clock["now"])
 
@@ -702,7 +702,7 @@ def test_cmd_wait_for_ready_launches_editor_before_polling(capsys, monkeypatch, 
         "soft_ue_cli.__main__.health_check",
         lambda **_kwargs: {"running": True, "name": "soft-ue-bridge"},
     )
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:8080")
+    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
     monkeypatch.setattr("time.monotonic", lambda: 0.0)
 
     cmd_wait_for_ready(args)

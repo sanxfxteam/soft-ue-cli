@@ -1,18 +1,4 @@
-# soft-ue-cli (+mcp)
-
-[![PyPI version](https://img.shields.io/pypi/v/soft-ue-cli.svg)](https://pypi.org/project/soft-ue-cli/)
-[![Python 3.10+](https://img.shields.io/pypi/pyversions/soft-ue-cli.svg)](https://pypi.org/project/soft-ue-cli/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![AI agents](https://img.shields.io/badge/AI_agents-ready-7c3aed)](#why-soft-ue-cli)
-[![skills](https://img.shields.io/badge/skills-11-84cc16)](#skills-llm-workflow-prompts)
-[![tools](https://img.shields.io/badge/tools-60%2B-f97316)](#complete-command-reference)
-[![MCP](https://img.shields.io/badge/MCP-server-0ea5e9)](#mcp-server-mode)
-[![AI built for coding agents](https://img.shields.io/badge/AI_built_for-coding_agents-6b7280)](#why-soft-ue-cli)
-[![GitHub Sponsors](https://img.shields.io/badge/GitHub_Sponsors-Support_this_project-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/softdaddy-o)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy_me_a_coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/softdaddy)
-
-Built and maintained by a solo developer. [Support this project](#support-this-project) if it saves you time.
-
+# soft-ue-cli
 
 **Control Unreal Engine 5 from your AI agent or terminal.** soft-ue-cli gives any LLM — via **MCP server** or **CLI** — 60+ tools to spawn actors, edit Blueprints, inspect materials, read and patch UE config files, run Play-In-Editor sessions, capture screenshots, profile performance, and more inside a running UE5 editor or packaged build.
 
@@ -45,7 +31,6 @@ soft-ue-cli  (CLI or MCP server)
 - **60+ tools** covering actors, Blueprints, materials, StateTrees, widgets, assets, config files, PIE sessions, profiling, and more.
 - **Online + offline workflows** -- bridge-backed UE mutation and runtime inspection when Unreal is open, plus direct local inspection, diff, and config tooling when it is not.
 - **Config-aware workflows** — inspect hierarchy, trace overrides, diff layers, and patch `.ini`, `BuildConfiguration.xml`, and `.uproject` data from one `config` command group.
-- **LLM skill prompts** -- ships with markdown workflows (e.g. Blueprint-to-C++ conversion) exposed as MCP prompts or CLI commands.
 - **Works everywhere UE runs** -- editor, cooked builds, Windows, macOS, Linux.
 - **Single dependency** -- only requires `httpx`. Add `[mcp]` extra for MCP server mode.
 - **Team-friendly** -- conditional compilation via `SOFT_UE_BRIDGE` environment variable means only developers who need the bridge get it compiled in.
@@ -76,7 +61,7 @@ If you're running manually (not via an LLM), follow the printed instructions you
 After regenerating project files and rebuilding, launch the editor. Look for this log line to confirm the bridge is running:
 
 ```
-LogSoftUEBridge: Bridge server started on port 8080
+LogSoftUEBridge: Bridge server started on port 18080
 ```
 
 ### 5. Verify the connection
@@ -126,31 +111,12 @@ soft-ue-cli command
     +-- Offline commands ----------------------------------------------+
            Local parsers and file readers
            -> Package tables / tagged properties / config hierarchy
-           -> inspect-uasset, diff-uasset, config *, skills get/list
+           -> inspect-uasset, diff-uasset, config *
 ```
 
-The **SoftUEBridge** plugin is a lightweight C++ `UGameInstanceSubsystem` that starts an embedded HTTP server on port 8080 when UE launches. Bridge-backed commands send JSON-RPC requests to this server, and the plugin executes the corresponding UE operations on the game thread, returning structured JSON responses. Offline commands bypass the bridge entirely and operate directly on local files.
+The **SoftUEBridge** plugin is a lightweight C++ `UGameInstanceSubsystem` that starts an embedded HTTP server on port 18080 when UE launches. Bridge-backed commands send JSON-RPC requests to this server, and the plugin executes the corresponding UE operations on the game thread, returning structured JSON responses. Offline commands bypass the bridge entirely and operate directly on local files.
 
 All commands output JSON to stdout (except `get-logs --raw`). Exit code 0 means success, 1 means error.
-
-### Skills Architecture
-
-```
-LLM client (Claude Code, Cursor, etc.)
-    |
-    |  soft-ue-cli skills get <name>
-    v
-Skill file  (markdown shipped with CLI pip package)
-    |
-    |  LLM reads instructions, type mappings, pre-filled commands
-    v
-LLM executes soft-ue-cli commands (query-blueprint, query-blueprint-graph, ...)
-    |
-    v
-LLM generates output (e.g. .h/.cpp files) following the skill's rules
-```
-
-Skills are **markdown files** at `cli/soft_ue_cli/skills/*.md`, shipped as package data in the pip distribution. Each skill is self-contained: workflow instructions, reference tables, example CLI commands, and verification test cases. The CLI discovers them via `skills list` / `skills get`. When running as an MCP server, the same files are exposed via the `prompts/list` and `prompts/get` protocol.
 
 ### Test Workflow
 
@@ -426,31 +392,13 @@ These commands are blocked/restricted when whitelisted mode is active (enforced 
 | `reload-bridge-module` | Reload the bridge editor module from disk without a full editor restart |
 | `set-viewport-camera` | Set editor viewport camera position, rotation, or preset view (top/front/right/perspective) |
 
-#### Skills (LLM Workflow Prompts)
-
-| Command | Description |
-|---------|-------------|
-| `skills list` | List all available LLM skill prompts shipped with the CLI |
-| `skills get <name>` | Print a skill's full content to stdout for LLM consumption |
-
-Skills are markdown prompts that teach an LLM client how to perform complex multi-step workflows using soft-ue-cli commands. They include step-by-step instructions, type mapping tables, and pre-filled CLI commands.
-
-**Available skills:**
-
-| Skill | Description |
-|-------|-------------|
-| `blueprint-to-cpp` | Generate C++ `.h`/`.cpp` from a Blueprint asset -- Layer 1 (class scaffolding) + Layer 2 (graph logic translation) |
-| `level-from-image` | Populate a UE level from a reference image -- analyzes the image, maps scene elements to project assets, batch-places actors, then iterates with visual feedback (viewport screenshots) |
-| `replay-changes` | Walk the binary-asset conflict recovery flow for Git or Perforce: extract base/local/remote revisions, inspect offline diffs, sync the incoming binary, and replay the wanted local edits manually |
-| `test-tools` | Run the exhaustive live integration test script across CLI and MCP modes, including offline `.uasset` smoke checks against a generated Blueprint |
-
 ### MCP Server Mode
 
 | Command | Description |
 |---------|-------------|
 | `mcp-serve` | Run as an MCP (Model Context Protocol) server over stdio |
 
-Exposes all 60+ commands as MCP tools and skills as MCP prompts. Compatible with Claude Desktop, Claude Code, Cursor, Windsurf, and other MCP clients. Requires the optional `mcp` extra:
+Exposes all 60+ commands as MCP tools. Compatible with Claude Desktop, Claude Code, Cursor, Windsurf, and other MCP clients. Requires the optional `mcp` extra:
 
 ```bash
 pip install soft-ue-cli[mcp]
@@ -636,34 +584,6 @@ soft-ue-cli disconnect-graph-pin /Game/ABP_Hero {node-guid} OutputPose \
   --target-node {other-guid} --target-pin InputPose
 ```
 
-### Convert a Blueprint to C++ using the LLM skill
-
-```bash
-# List available skills
-soft-ue-cli skills list
-
-# Feed the blueprint-to-cpp skill to your LLM client
-soft-ue-cli skills get blueprint-to-cpp
-# The LLM reads the skill instructions, then runs:
-#   soft-ue-cli query-enum /Game/Data/E_Dependency
-#   soft-ue-cli query-struct /Game/Data/S_Dependency
-#   soft-ue-cli query-blueprint /Game/BP_Player --include all --include-inherited
-#   soft-ue-cli query-blueprint-graph /Game/BP_Player --list-callables
-# ...and generates the .h/.cpp files from the JSON responses
-```
-
-### Populate a level from a reference image
-
-```bash
-# Get the level-from-image skill instructions
-soft-ue-cli skills get level-from-image
-# The LLM analyzes the image, searches for matching assets, places them,
-# then enters a visual feedback loop:
-#   soft-ue-cli set-viewport-camera --preset top --ortho-width 8000
-#   soft-ue-cli capture-viewport --source editor --output file
-# Compares screenshot to reference, auto-corrects, then asks for human feedback
-```
-
 ### Profile with UE Insights
 
 ```bash
@@ -710,8 +630,8 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SOFT_UE_BRIDGE_URL` | *(none)* | Full bridge URL override (e.g. `http://192.168.1.10:8080`) |
-| `SOFT_UE_BRIDGE_PORT` | `8080` | Port override when using localhost |
+| `SOFT_UE_BRIDGE_URL` | *(none)* | Full bridge URL override (e.g. `http://192.168.1.10:18080`) |
+| `SOFT_UE_BRIDGE_PORT` | `18080` | Port override when using localhost |
 | `SOFT_UE_BRIDGE` | *(none)* | Set to `1` to enable conditional compilation in `Target.cs` |
 
 ### Server Discovery Order
@@ -722,7 +642,7 @@ The CLI finds the bridge server using this priority:
 2. `SOFT_UE_BRIDGE_URL` environment variable
 3. `SOFT_UE_BRIDGE_PORT` environment variable (constructs `http://127.0.0.1:<port>`)
 4. `.soft-ue-bridge/instance.json` file (searched upward from the current working directory -- written automatically by the plugin at startup)
-5. `http://127.0.0.1:8080` (default fallback)
+5. `http://127.0.0.1:18080` (default fallback)
 
 ### Conditional Compilation for Teams
 
@@ -782,6 +702,17 @@ python -m build
 hatch build
 ```
 
+### Building Standalone Executable
+To build a standalone executable (`soft-ue-cli.exe`):
+
+#### Using the helper script
+Run the builder script, which automatically prepares a virtual environment and builds the binary:
+```bash
+python build_executable.py
+```
+
+The output standalone executable will be generated in the `dist/` folder.
+
 ### Running Tests
 To run the full unit test suite:
 
@@ -792,18 +723,6 @@ pytest -v
 ---
 
 ## Feedback
-
-### Report a bug
-
-```bash
-soft-ue-cli report-bug \
-  --title "Short bug summary" \
-  --description "Detailed description"
-```
-
-Do not include project-specific information, personal information, or any clue that could identify your project. Replace project names, internal paths, asset names, emails, tokens, and other sensitive details with generic placeholders.
-
-Optional flags: `--steps`, `--expected`, `--actual`, `--severity critical|major|minor`, `--no-system-info`.
 
 ### Request a feature
 
@@ -864,7 +783,7 @@ The SoftUEBridge plugin adds a lightweight HTTP server that listens on a single 
 
 ### How do I change the default port?
 
-Set the `SOFT_UE_BRIDGE_PORT` environment variable before launching UE, or use the `--server` flag when running CLI commands. The default port is 8080.
+Set the `SOFT_UE_BRIDGE_PORT` environment variable before launching UE, or use the `--server` flag when running CLI commands. The default port is 18080.
 
 ### Can multiple UE instances run simultaneously?
 
@@ -893,7 +812,7 @@ Run `pip install soft-ue-cli[mcp]` to install MCP support, then add the server t
 }
 ```
 
-The MCP server exposes all 60+ commands as MCP tools and skills as MCP prompts. The AI editor can then directly call UE operations without going through the terminal.
+The MCP server exposes all 60+ commands as MCP tools. The AI editor can then directly call UE operations without going through the terminal.
 
 ### What is the difference between soft-ue-cli and other UE MCP servers?
 
@@ -901,7 +820,6 @@ The MCP server exposes all 60+ commands as MCP tools and skills as MCP prompts. 
 |---|---|---|
 | **Tools** | 60+ | 10–49 |
 | **Coverage** | Blueprints, materials, StateTrees, widgets, PIE, profiling, DataTables, CVars, Live Coding | Varies; most cover actors + basic assets |
-| **LLM skill prompts** | Yes (MCP prompts + CLI) | No |
 | **CLI mode** | Yes — shell scripts, CI/CD, Claude Code | MCP-only |
 | **Setup** | `pip install soft-ue-cli[mcp]` + copy one plugin | Varies; often requires custom C++/Python scripting |
 
@@ -921,7 +839,6 @@ Using soft-ue-cli in your project? [Share your experience](https://github.com/so
 ## Roadmap
 
 - UE 5.8 support
-- More LLM skills (Material-to-HLSL, Animation Blueprint automation)
 - Visual diff for Blueprint changes
 - CI/CD integration examples
 

@@ -12,7 +12,7 @@ def _load_instance_file(path: Path) -> str | None:
     try:
         data = json.loads(path.read_text())
         host = data.get("host", "127.0.0.1")
-        port = data.get("port", 8080)
+        port = data.get("port", 18080)
         return f"http://{host}:{port}"
     except Exception:
         return None
@@ -35,7 +35,7 @@ def get_server_url() -> str:
     1. SOFT_UE_BRIDGE_URL env var (full URL)
     2. SOFT_UE_BRIDGE_PORT env var (port only)
     3. .soft-ue-bridge/instance.json in cwd or any parent (project-local, written by plugin)
-    4. Default: http://127.0.0.1:8080
+    4. Default: http://127.0.0.1:18080
     """
     if url := os.environ.get("SOFT_UE_BRIDGE_URL"):
         return url.rstrip("/")
@@ -49,4 +49,4 @@ def get_server_url() -> str:
     if url := _find_project_instance():
         return url
 
-    return "http://127.0.0.1:8080"
+    return "http://127.0.0.1:18080"

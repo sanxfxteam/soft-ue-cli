@@ -23,7 +23,7 @@ def test_load_instance_file_valid(tmp_path):
 def test_load_instance_file_defaults_when_fields_missing(tmp_path):
     f = tmp_path / "instance.json"
     f.write_text("{}")
-    assert _load_instance_file(f) == "http://127.0.0.1:8080"
+    assert _load_instance_file(f) == "http://127.0.0.1:18080"
 
 
 def test_load_instance_file_custom_host(tmp_path):
@@ -81,7 +81,7 @@ def test_find_project_instance_returns_none_when_not_found(tmp_path, monkeypatch
 def test_find_project_instance_prefers_closest(tmp_path, monkeypatch):
     # Parent has one port, child dir has another ??child wins
     (tmp_path / ".soft-ue-bridge").mkdir()
-    (tmp_path / ".soft-ue-bridge" / "instance.json").write_text(json.dumps({"port": 8080}))
+    (tmp_path / ".soft-ue-bridge" / "instance.json").write_text(json.dumps({"port": 18080}))
     subdir = tmp_path / "Content"
     subdir.mkdir()
     (subdir / ".soft-ue-bridge").mkdir()
@@ -115,7 +115,7 @@ def test_get_server_url_invalid_port_falls_through(monkeypatch, tmp_path):
     monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "not-a-number")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("soft_ue_cli.discovery._find_project_instance", lambda: None)
-    assert get_server_url() == "http://127.0.0.1:8080"
+    assert get_server_url() == "http://127.0.0.1:18080"
 
 
 def test_get_server_url_instance_file(monkeypatch, tmp_path):
@@ -133,7 +133,7 @@ def test_get_server_url_default_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("SOFT_UE_BRIDGE_PORT", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("soft_ue_cli.discovery._find_project_instance", lambda: None)
-    assert get_server_url() == "http://127.0.0.1:8080"
+    assert get_server_url() == "http://127.0.0.1:18080"
 
 
 def test_get_server_url_url_beats_port(monkeypatch):

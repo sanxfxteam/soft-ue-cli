@@ -41,14 +41,12 @@ def _run_tool(tool_name: str, arguments: dict) -> dict:
     On success: records the daily streak, prints testimonial nudge if earned, returns result.
     On error: prints to stderr, appends bug nudge for unexpected errors, exits.
     """
-    from .errors import BridgeError, ErrorKind, format_bug_nudge
+    from .errors import BridgeError, ErrorKind
 
     try:
         result = call_tool(tool_name, arguments)
     except BridgeError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
-        if exc.kind == ErrorKind.UNEXPECTED:
-            print(format_bug_nudge(exc.tool_name, exc.message), file=sys.stderr)
         sys.exit(1)
 
     # Record daily streak on success (best-effort, never fail the command)
@@ -1903,26 +1901,7 @@ PRIVACY_GUIDANCE = (
 )
 
 
-def cmd_report_bug(args: argparse.Namespace) -> None:
-    from .github import create_issue
 
-    sections = [f"## Description\n{args.description}"]
-    if args.steps:
-        sections.append(f"## Steps to Reproduce\n{args.steps}")
-    if args.expected:
-        sections.append(f"## Expected Behavior\n{args.expected}")
-    if args.actual:
-        sections.append(f"## Actual Behavior\n{args.actual}")
-    if not args.no_system_info:
-        sections.append(_gather_system_info())
-
-    body = "\n\n".join(sections)
-    labels = ["bug"]
-    if args.severity:
-        labels.append(args.severity)
-
-    result = create_issue(args.title, body, labels)
-    _print_json(result)
 
 
 def cmd_request_feature(args: argparse.Namespace) -> None:
@@ -2049,20 +2028,6 @@ def cmd_knowledge(args: argparse.Namespace) -> None:
     """Query the optional knowledge server (RAG)."""
     print("Coming soon. Follow https://github.com/softdaddy-o/soft-ue-cli for updates.")
 
-
-def cmd_skills(args: argparse.Namespace) -> None:
-    from .skills import get_skill, list_skills
-
-    if args.skills_action == "list":
-        for skill in list_skills():
-            print(f"{skill['name']:<24}{skill['description']}")
-        return
-
-    content = get_skill(args.skill_name)
-    if content is None:
-        print(f"error: skill '{args.skill_name}' not found", file=sys.stderr)
-        sys.exit(1)
-    print(content)
 
 
 def cmd_mcp_serve(args: argparse.Namespace) -> None:
@@ -2579,7 +2544,7 @@ def cmd_rewind_save(args: argparse.Namespace) -> None:
 
 
 def cmd_run_automation(args: argparse.Namespace) -> None:
-    from .errors import BridgeError, ErrorKind, format_bug_nudge
+    from .errors import BridgeError, ErrorKind
 
     if args.test_timeout is None:
         arguments: dict = {"tests": args.tests, "timeout_per_test": 60.0}
@@ -2592,8 +2557,6 @@ def cmd_run_automation(args: argparse.Namespace) -> None:
         result = call_tool("run-automation", arguments, timeout=http_timeout)
     except BridgeError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
-        if exc.kind == ErrorKind.UNEXPECTED:
-            print(format_bug_nudge(exc.tool_name, exc.message), file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -2654,6 +2617,169 @@ def cmd_run_automation(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _find_config_file(start_path: Path | None = None) -> Path | None:
+    current = (start_path or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+    for directory in [current, *current.parents]:
+        candidate = directory / "soft-ue.config.json"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_build_command(config_path: Path | None = None) -> str:
+    path = config_path or _find_config_file()
+    if not path:
+        print("error: soft-ue.config.json not found. Ensure you are in the project directory.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"error: failed to read config file {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    
+    cmd = data.get("build-command")
+    if not cmd:
+        print(f"error: 'build-command' not defined in {path.name}", file=sys.stderr)
+        sys.exit(1)
+    return cmd
+
+
+def _find_project_root_local() -> Path:
+    current = Path.cwd().resolve()
+    for directory in [current, *current.parents]:
+        if any(directory.glob("*.uproject")):
+            return directory
+    return current
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    import subprocess
+    config_path = Path(args.config) if getattr(args, "config", None) else None
+    build_cmd = _load_build_command(config_path)
+    print(f"Executing build command: {build_cmd}", file=sys.stderr)
+    
+    process = subprocess.Popen(build_cmd, shell=True)
+    process.wait()
+    if process.returncode != 0:
+        print(f"error: build command failed with exit code {process.returncode}", file=sys.stderr)
+        sys.exit(process.returncode)
+
+
+def cmd_build_start(args: argparse.Namespace) -> None:
+    import subprocess
+    # 1. Run build
+    config_path = Path(args.config) if getattr(args, "config", None) else None
+    build_cmd = _load_build_command(config_path)
+    print(f"Executing build command: {build_cmd}", file=sys.stderr)
+    
+    process = subprocess.Popen(build_cmd, shell=True)
+    process.wait()
+    if process.returncode != 0:
+        print(f"error: build command failed with exit code {process.returncode}", file=sys.stderr)
+        sys.exit(process.returncode)
+
+    # 2. Find .uproject
+    project_root = _find_project_root_local()
+    uproject_files = list(project_root.glob("*.uproject"))
+    if not uproject_files:
+        print("error: no .uproject file found in project directory", file=sys.stderr)
+        sys.exit(1)
+    uproject_path = uproject_files[0]
+
+    # 3. Clean up existing log file
+    log_path = uproject_path.parent / "Saved" / "Logs" / f"{uproject_path.stem}.log"
+    if log_path.exists():
+        try:
+            log_path.unlink()
+        except Exception:
+            try:
+                with open(log_path, "w") as f:
+                    f.truncate(0)
+            except Exception:
+                pass
+
+    # 4. Start editor
+    print(f"Launching editor for project: {uproject_path.name}", file=sys.stderr)
+    _launch_editor_for_wait(str(uproject_path))
+
+    # 5. Tail follow log file & watch for Angelscript errors
+    log_start = time.monotonic()
+    while not log_path.exists():
+        if time.monotonic() - log_start > 10.0:
+            print("Warning: log file not created within 10 seconds.", file=sys.stderr)
+            break
+        time.sleep(0.1)
+
+    log_file = None
+    if log_path.exists():
+        log_file = open(log_path, "r", encoding="utf-8", errors="replace")
+
+    timeout = float(getattr(args, "timeout", 120.0) or 120.0)
+    poll_interval = float(getattr(args, "poll_interval", 2.0) or 2.0)
+    start_time = time.monotonic()
+
+    print("Watching logs for Angelscript errors...", file=sys.stderr)
+    try:
+        while True:
+            # Read any new lines in the log file
+            if log_file:
+                while True:
+                    line = log_file.readline()
+                    if not line:
+                        break
+                    line = line.rstrip("\r\n")
+                    if "LogAngelscript: Error:" in line or "Angelscript: Error:" in line:
+                        print(f"[AS Error] {line}", file=sys.stderr)
+
+            # Check if the bridge is ready
+            elapsed = time.monotonic() - start_time
+            probe_timeout = max(0.2, min(5.0, poll_interval, max(timeout - elapsed, 0.2)))
+            health = health_check(timeout=probe_timeout)
+            if _bridge_health_is_ready(health):
+                # Print any remaining lines
+                if log_file:
+                    while True:
+                        line = log_file.readline()
+                        if not line:
+                            break
+                        line = line.rstrip("\r\n")
+                        if "LogAngelscript: Error:" in line or "Angelscript: Error:" in line:
+                            print(f"[AS Error] {line}", file=sys.stderr)
+                
+                print("Editor started successfully and bridge is ready.", file=sys.stderr)
+                _print_json({
+                    "success": True,
+                    "status": "ready",
+                    "elapsed_seconds": round(time.monotonic() - start_time, 1)
+                })
+                break
+
+            if elapsed >= timeout:
+                print(f"error: bridge did not become ready within {timeout:g}s", file=sys.stderr)
+                sys.exit(1)
+
+            time.sleep(min(poll_interval, max(timeout - elapsed, 0.0)))
+    finally:
+        if log_file:
+            log_file.close()
+
+
+def cmd_shutdown_build_restart(args: argparse.Namespace) -> None:
+    print("Requesting editor shutdown...", file=sys.stderr)
+    from .client import shutdown as client_shutdown
+    from .errors import BridgeError
+    try:
+        client_shutdown()
+        print("Editor shutdown requested successfully. Waiting a moment for it to close...", file=sys.stderr)
+        time.sleep(3.0)
+    except BridgeError as exc:
+        print(f"Warning: could not shut down editor (already closed or unreachable): {exc.message}", file=sys.stderr)
+    
+    cmd_build_start(args)
+
+
 # -- Argument parser -----------------------------------------------------------
 
 
@@ -2678,7 +2804,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Override the bridge server URL (e.g. http://127.0.0.1:9000). "
             "By default the URL is auto-discovered from the SOFT_UE_BRIDGE_URL env var, "
             "then SOFT_UE_BRIDGE_PORT, then .soft-ue-bridge/instance.json searched upward from cwd "
-            "(written by the plugin at startup), then http://127.0.0.1:8080."
+            "(written by the plugin at startup), then http://127.0.0.1:18080."
         ),
     )
     parser.add_argument(
@@ -2714,7 +2840,7 @@ def build_parser() -> argparse.ArgumentParser:
             "After running setup:\n"
             "  1. Right-click .uproject -> Generate Visual Studio project files\n"
             "  2. Rebuild in VS or Rider\n"
-            "  3. Launch UE -- you should see: LogSoftUEBridge: Bridge server started on port 8080\n"
+            "  3. Launch UE -- you should see: LogSoftUEBridge: Bridge server started on port 18080\n"
             "  4. Run 'soft-ue-cli check-setup' to verify the connection\n\n"
             "EXAMPLES:\n"
             "  soft-ue-cli setup                  # installs into current directory\n"
@@ -4795,39 +4921,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Feedback
     # -------------------------------------------------------------------------
 
-    p_rb = sub.add_parser(
-        "report-bug",
-        help="Report a bug by creating a GitHub issue on the soft-ue-cli repo.",
-        description=(
-            "Creates a GitHub issue with structured bug report fields.\n"
-            "Auto-enriches with system info (CLI version, Python, OS, bridge status)\n"
-            "unless --no-system-info is passed.\n\n"
-            "PRIVACY:\n"
-            "  Do not include project-specific information, personal information,\n"
-            "  or any clue that could identify your project.\n"
-            "  Replace project names, internal paths, asset names, emails, tokens,\n"
-            "  and other sensitive details with generic placeholders.\n\n"
-            "AUTHENTICATION:\n"
-            "  Set GITHUB_TOKEN env var or run 'gh auth login'.\n"
-            "  Required scope: 'public_repo' (public repos) or 'repo' (private).\n\n"
-            "EXAMPLES:\n"
-            '  soft-ue-cli report-bug --title "crash on spawn" --description "Editor crashes"\n'
-            '  soft-ue-cli report-bug --title "crash" --description "desc" --severity critical\n'
-            '  soft-ue-cli report-bug --title "bug" --description "desc" --no-system-info'
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_rb.add_argument("--title", required=True, help="Short bug summary")
-    p_rb.add_argument(
-        "--description", required=True,
-        help=f"Detailed description. {PRIVACY_GUIDANCE}",
-    )
-    p_rb.add_argument("--steps", help=f"Steps to reproduce. {PRIVACY_GUIDANCE}")
-    p_rb.add_argument("--expected", help=f"Expected behavior. {PRIVACY_GUIDANCE}")
-    p_rb.add_argument("--actual", help=f"Actual behavior. {PRIVACY_GUIDANCE}")
-    p_rb.add_argument("--severity", choices=["critical", "major", "minor"], help="Bug severity label")
-    p_rb.add_argument("--no-system-info", action="store_true", help="Opt out of auto-enriched system information")
-    p_rb.set_defaults(func=cmd_report_bug)
+
 
     p_rf = sub.add_parser(
         "request-feature",
@@ -4940,34 +5034,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca.add_argument("--type", dest="config_type", default="Engine", help="Config category (default: Engine)")
 
     p_config.set_defaults(func=cmd_config)
-
-    # skills
-    p_skills = sub.add_parser(
-        "skills",
-        help="Discover and retrieve LLM skill prompts shipped with the CLI.",
-        description=(
-            "Skills are markdown prompts that teach an LLM client how to perform\n"
-            "complex workflows using soft-ue-cli commands. They include step-by-step\n"
-            "instructions, type mapping tables, and pre-filled CLI commands.\n\n"
-            "EXAMPLES:\n"
-            "  soft-ue-cli skills list\n"
-            "  soft-ue-cli skills get blueprint-to-cpp"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    skills_sub = p_skills.add_subparsers(dest="skills_action", required=True)
-    skills_sub.add_parser("list", help="List all available skills")
-    p_skills_get = skills_sub.add_parser("get", help="Print a skill's full content")
-    p_skills_get.add_argument("skill_name", help="Skill name (e.g. blueprint-to-cpp)")
-    p_skills.set_defaults(func=cmd_skills)
-
     # mcp-serve
     p_mcp = sub.add_parser(
         "mcp-serve",
         help="Run as an MCP server over stdio for AI editor integration.",
         description=(
             "Starts an MCP (Model Context Protocol) server over stdio transport.\n"
-            "Exposes all soft-ue-cli commands as MCP tools and skills as MCP prompts.\n\n"
+            "Exposes all soft-ue-cli commands as MCP tools.\n\n"
             "Requires the 'mcp' extra: pip install soft-ue-cli[mcp]\n\n"
             "USAGE IN MCP CLIENT CONFIG:\n"
             '  {\n'
@@ -5156,6 +5229,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output raw JSON results",
     )
     p_ra.set_defaults(func=cmd_run_automation)
+
+    # build
+    p_build = sub.add_parser(
+        "build",
+        help="Run the build command defined in soft-ue.config.json.",
+        description="Reads the 'build-command' key from soft-ue.config.json and executes it, streaming the logs.",
+    )
+    p_build.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to soft-ue.config.json (auto-detected if omitted)",
+    )
+    p_build.set_defaults(func=cmd_build)
+
+    # build-start
+    p_build_start = sub.add_parser(
+        "build-start",
+        help="Run the build, then start the editor and print all Angelscript errors.",
+        description="Runs the build, launches the editor, and tail-follows the log file to print Angelscript errors until the bridge is ready.",
+    )
+    p_build_start.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to soft-ue.config.json (auto-detected if omitted)",
+    )
+    p_build_start.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        metavar="SEC",
+        help="Timeout in seconds for the bridge to become ready (default: 120.0)",
+    )
+    p_build_start.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        metavar="SEC",
+        help="Polling interval in seconds for the bridge health check (default: 2.0)",
+    )
+    p_build_start.set_defaults(func=cmd_build_start)
+
+    # shutdown-build-restart
+    p_sbr = sub.add_parser(
+        "shutdown-build-restart",
+        help="Shut down the running editor, rebuild, and restart it.",
+        description="Requests editor shutdown via the bridge, runs the build command, restarts the editor, and monitors logs for Angelscript errors.",
+    )
+    p_sbr.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to soft-ue.config.json (auto-detected if omitted)",
+    )
+    p_sbr.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        metavar="SEC",
+        help="Timeout in seconds for the bridge to become ready (default: 120.0)",
+    )
+    p_sbr.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        metavar="SEC",
+        help="Polling interval in seconds for the bridge health check (default: 2.0)",
+    )
+    p_sbr.set_defaults(func=cmd_shutdown_build_restart)
 
     return parser
 

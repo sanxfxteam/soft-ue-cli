@@ -7,7 +7,6 @@ from typing import Any
 
 EXCLUDED_COMMANDS: frozenset[str] = frozenset({
     "await-bridge",
-    "skills",
     "mcp-serve",
 })
 
@@ -18,10 +17,12 @@ CLIENT_SIDE_COMMANDS: frozenset[str] = frozenset({
     "wait-for-ready",
     "check-setup",
     "setup",
-    "report-bug",
     "submit-testimonial",
     "request-feature",
     "inspect-uasset",
+    "build",
+    "build-start",
+    "shutdown-build-restart",
     "diff-uasset",
     "config",
     "add-co-node",

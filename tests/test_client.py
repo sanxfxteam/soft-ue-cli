@@ -17,7 +17,7 @@ from soft_ue_cli.client import call_tool, health_check
 from soft_ue_cli.errors import BridgeError
 
 
-_DUMMY_REQUEST = httpx.Request("POST", "http://127.0.0.1:8080/bridge")
+_DUMMY_REQUEST = httpx.Request("POST", "http://127.0.0.1:18080/bridge")
 
 
 def _resp(status: int, body: dict | None = None, text: str | None = None) -> httpx.Response:
@@ -29,7 +29,7 @@ def _resp(status: int, body: dict | None = None, text: str | None = None) -> htt
     return r
 
 
-def _patch_url(url: str = "http://127.0.0.1:8080"):
+def _patch_url(url: str = "http://127.0.0.1:18080"):
     return patch("soft_ue_cli.client.get_server_url", return_value=url)
 
 
@@ -168,7 +168,7 @@ def test_call_tool_empty_result(monkeypatch):
 
 
 def test_health_check_success(monkeypatch):
-    req = httpx.Request("GET", "http://127.0.0.1:8080/bridge")
+    req = httpx.Request("GET", "http://127.0.0.1:18080/bridge")
     monkeypatch.setattr(httpx, "get", lambda url, **kw: httpx.Response(200, json={"status": "ok"}, request=req))
     with _patch_url():
         result = health_check()

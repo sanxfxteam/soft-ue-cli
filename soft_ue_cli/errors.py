@@ -28,25 +28,3 @@ class BridgeError(Exception):
         self.tool_name = tool_name
         self.arguments = arguments
 
-
-def format_bug_nudge(tool_name: str, error_message: str) -> str:
-    """Return a CLI-formatted hint suggesting the user file a bug report."""
-    safe_title = f"error in {tool_name}"
-    safe_desc = error_message.replace('"', '\\"')
-    return (
-        "\n  Looks like a bug? Run:\n"
-        f'    soft-ue-cli report-bug --title "{safe_title}" '
-        f'--description "{safe_desc}"'
-    )
-
-
-def bug_nudge_payload(tool_name: str, error_message: str) -> dict:
-    """Return a structured dict for MCP error responses."""
-    return {
-        "suggested_command": "report-bug",
-        "suggested_args": {
-            "title": f"error in {tool_name}",
-            "description": error_message,
-            "severity": "major",
-        },
-    }

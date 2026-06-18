@@ -1,6 +1,6 @@
 """MCP server mode for soft-ue-cli.
 
-Exposes CLI commands as MCP tools and skills as MCP prompts
+Exposes CLI commands as MCP tools
 over stdio transport using FastMCP.
 
 The ``mcp`` package is imported at call time so this module
@@ -19,9 +19,8 @@ import argparse as _argparse
 
 from . import client as _client
 from . import streak as _streak
-from .errors import BridgeError, ErrorKind, bug_nudge_payload
+from .errors import BridgeError, ErrorKind
 from .mcp_schema import CLIENT_SIDE_COMMANDS, extract_tools
-from .skills import get_skill, list_skills
 
 # CLI command names that differ from their bridge tool names.
 _BRIDGE_TOOL_NAME_MAP: dict[str, str] = {
@@ -160,10 +159,6 @@ def _make_tool_fn(tool_name: str, params: dict | None = None):
                     except Exception:
                         pass
             error_response = {"error": f"Tool '{tool_name}' failed: {exc.message}"}
-            if exc.kind == ErrorKind.UNEXPECTED:
-                error_response["bug_report_hint"] = bug_nudge_payload(
-                    exc.tool_name, exc.message,
-                )
             return json.dumps(error_response, indent=2, ensure_ascii=False)
 
         if tool_name == "add-graph-node":
@@ -244,9 +239,8 @@ def _make_client_tool_fn(tool_name: str, cmd_fn, params: dict | None = None):
 
 
 def create_server():
-    """Create and configure the MCP server with all tools and prompts."""
+    """Create and configure the MCP server with all tools."""
     from mcp.server.fastmcp import FastMCP
-    from mcp.server.fastmcp.prompts import Prompt
 
     mcp = FastMCP("soft-ue-cli")
 
@@ -267,27 +261,6 @@ def create_server():
         fn.__doc__ = description
 
         mcp.add_tool(fn, name=name, description=description)
-
-    # Register skills as prompts
-    for skill in list_skills():
-        skill_name = skill["name"]
-        skill_desc = skill["description"]
-
-        def make_prompt_fn(sn: str, sd: str):
-            def prompt_fn() -> str:
-                content = get_skill(sn)
-                return content or f"Skill '{sn}' not found"
-            prompt_fn.__name__ = sn.replace("-", "_")
-            prompt_fn.__qualname__ = prompt_fn.__name__
-            prompt_fn.__doc__ = sd
-            return prompt_fn
-
-        prompt = Prompt.from_function(
-            make_prompt_fn(skill_name, skill_desc),
-            name=skill_name,
-            description=skill_desc,
-        )
-        mcp.add_prompt(prompt)
 
     return mcp
 

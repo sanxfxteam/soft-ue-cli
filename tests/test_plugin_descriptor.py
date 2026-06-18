@@ -410,15 +410,6 @@ def test_set_node_position_supports_customizable_object_graphs():
     assert "FBridgeAssetModifier::MarkPackageDirty(Object)" in source
 
 
-def test_live_smoke_skill_expects_slot_wiring_macro():
-    root = _repo_root()
-    monorepo_path = root / "cli" / "soft_ue_cli" / "skills" / "test-tools.md"
-    exported_path = root / "soft_ue_cli" / "skills" / "test-tools.md"
-    content = (monorepo_path if monorepo_path.exists() else exported_path).read_text(encoding="utf-8")
-
-    assert "wire-customizable-object-slot-from-table" in content
-
-
 def test_datatable_row_tool_uses_field_level_bridge_deserializer():
     source = _plugin_source_path(
         "Source/SoftUEBridgeEditor/Private/Tools/Write/AddDataTableRowTool.cpp"

@@ -129,32 +129,29 @@ def test_customizable_object_convenience_commands_run_client_side_for_mcp():
         "compile-co",
         "remove-co-node",
         "wait-for-ready",
+        "build",
+        "build-start",
+        "shutdown-build-restart",
     }:
         assert command in CLIENT_SIDE_COMMANDS
 
 
 def test_choices_map_to_enum():
     tools = extract_tools()
-    tool = next(t for t in tools if t["name"] == "report-bug")
+    tool = next(t for t in tools if t["name"] == "request-feature")
     params = tool["parameters"]
-    severity = params["properties"]["severity"]
-    assert "enum" in severity
+    priority = params["properties"]["priority"]
+    assert "enum" in priority
 
 
 def test_feedback_tools_include_privacy_guidance():
     tools = extract_tools()
 
-    report_bug = next(t for t in tools if t["name"] == "report-bug")
     feature = next(t for t in tools if t["name"] == "request-feature")
 
-    report_desc = report_bug["parameters"]["properties"]["description"]["description"]
-    report_steps = report_bug["parameters"]["properties"]["steps"]["description"]
     feature_desc = feature["parameters"]["properties"]["description"]["description"]
     feature_use_case = feature["parameters"]["properties"]["use_case"]["description"]
 
-    assert "project-specific information, personal information" in report_desc
-    assert "any clue that could identify your project" in report_desc
-    assert "generic placeholders" in report_steps
     assert "project-specific information, personal information" in feature_desc
     assert "any clue that could identify your project" in feature_desc
     assert "generic placeholders" in feature_use_case
@@ -171,13 +168,7 @@ def test_tool_count_is_reasonable():
     """Should have a stable, non-trivial tool count after exclusions."""
     tools = extract_tools()
     assert len(tools) >= 60
-    assert len(tools) <= 110
-
-
-def test_skills_excluded():
-    tools = extract_tools()
-    tool_names = {t["name"] for t in tools}
-    assert "skills" not in tool_names
+    assert len(tools) <= 120
 
 
 def test_mcp_serve_excluded():
