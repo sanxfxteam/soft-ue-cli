@@ -52,7 +52,6 @@ from soft_ue_cli.__main__ import (
     cmd_run_python_script,
     cmd_save_script,
     cmd_setup,
-    cmd_wait_for_ready,
     cmd_set_co_base_mesh,
     cmd_set_co_node_property,
     cmd_connect_co_pins,
@@ -211,13 +210,6 @@ def test_parser_build_and_relaunch_flags():
     assert args.startup_recovery == "skip"
     assert args.remember_startup_recovery is True
 
-
-def test_parser_wait_for_ready_alias_and_timeout():
-    parser = build_parser()
-    args = parser.parse_args(["await-bridge", "--timeout", "5", "--poll-interval", "0.25"])
-    assert args.func == cmd_wait_for_ready
-    assert args.timeout == 5.0
-    assert args.poll_interval == 0.25
 
 
 def test_parser_trigger_live_coding_scope_flags():
@@ -644,71 +636,6 @@ def test_cmd_build_and_relaunch_wait_forwards_timeout_overrides():
         build_timeout=12,
         relaunch_timeout=3,
     )
-
-
-def test_cmd_wait_for_ready_returns_when_bridge_health_succeeds(capsys, monkeypatch):
-    parser = build_parser()
-    args = parser.parse_args(["wait-for-ready", "--timeout", "5"])
-    monkeypatch.setattr(
-        "soft_ue_cli.__main__.health_check",
-        lambda **_kwargs: {"running": True, "name": "soft-ue-bridge"},
-    )
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
-    monkeypatch.setattr("time.monotonic", lambda: 0.0)
-
-    cmd_wait_for_ready(args)
-
-    result = json.loads(capsys.readouterr().out)
-    assert result["success"] is True
-    assert result["status"] == "ready"
-    assert result["server_url"] == "http://127.0.0.1:18080"
-    assert result["health"]["running"] is True
-
-
-def test_cmd_wait_for_ready_timeout_reports_last_error(capsys, monkeypatch):
-    parser = build_parser()
-    args = parser.parse_args(["wait-for-ready", "--timeout", "2", "--poll-interval", "1"])
-    clock = {"now": 0.0}
-
-    def fake_sleep(seconds):
-        clock["now"] += seconds
-
-    monkeypatch.setattr("soft_ue_cli.__main__.health_check", lambda **_kwargs: {"error": "connection refused"})
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
-    monkeypatch.setattr("time.sleep", fake_sleep)
-    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
-
-    with pytest.raises(SystemExit) as exc:
-        cmd_wait_for_ready(args)
-
-    assert exc.value.code == 1
-    captured = capsys.readouterr()
-    result = json.loads(captured.out)
-    assert result["success"] is False
-    assert result["status"] == "timeout"
-    assert result["last_error"] == "connection refused"
-    assert "bridge did not become ready within 2s" in captured.err
-
-
-def test_cmd_wait_for_ready_launches_editor_before_polling(capsys, monkeypatch, tmp_path):
-    uproject_path = tmp_path / "MyGame.uproject"
-    uproject_path.write_text("{}", encoding="utf-8")
-    parser = build_parser()
-    args = parser.parse_args(["wait-for-ready", "--launch-editor", str(uproject_path)])
-    launched: list[str] = []
-
-    monkeypatch.setattr("soft_ue_cli.__main__._launch_editor_for_wait", lambda path: launched.append(path))
-    monkeypatch.setattr(
-        "soft_ue_cli.__main__.health_check",
-        lambda **_kwargs: {"running": True, "name": "soft-ue-bridge"},
-    )
-    monkeypatch.setattr("soft_ue_cli.__main__.get_server_url", lambda: "http://127.0.0.1:18080")
-    monkeypatch.setattr("time.monotonic", lambda: 0.0)
-
-    cmd_wait_for_ready(args)
-
-    assert launched == [str(uproject_path)]
-    assert json.loads(capsys.readouterr().out)["status"] == "ready"
 
 
 def test_wait_for_build_and_relaunch_reports_intermediate_status(tmp_path, capsys, monkeypatch):

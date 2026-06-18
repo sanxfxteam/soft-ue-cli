@@ -21,8 +21,6 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     # Allowed infrastructure / diagnostic commands
     "status",
     "check-setup",
-    "wait-for-ready",
-    "await-bridge",
 })
 
 

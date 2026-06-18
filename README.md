@@ -163,7 +163,6 @@ These commands are fully permitted to run in both the CLI client and the Unreal 
 |---|---|---|
 | **Setup & Diagnostics** | `status` | Health check -- returns server status |
 | | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
-| | `wait-for-ready` / `await-bridge` | Poll the same bridge health probe as `status` until it is ready |
 | | `shutdown` | Request the Unreal Editor and bridge server to shut down and close |
 | **Asset & Visual Capture** | `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
 | | `capture-viewport` | Capture the current viewport |
@@ -187,7 +186,6 @@ These commands are fully permitted to run in whitelisted mode (both in the CLI c
 |---------|-------------|
 | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
 | `status` | Health check -- returns server status |
-| `wait-for-ready` | Poll the same bridge health probe as `status` until it is ready (`await-bridge` alias) |
 | `shutdown` | Request the Unreal Editor and bridge server to shut down and close cleanly |
 
 #### Play-In-Editor & Scripting

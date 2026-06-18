@@ -45,7 +45,6 @@ def test_extract_tools_contains_known_command():
     assert "inspect-uasset" in tool_names
     assert "diff-uasset" in tool_names
     assert "status" in tool_names
-    assert "wait-for-ready" in tool_names
 
 
 def test_tool_has_required_fields():
@@ -128,7 +127,6 @@ def test_customizable_object_convenience_commands_run_client_side_for_mcp():
         "regenerate-co-node-pins",
         "compile-co",
         "remove-co-node",
-        "wait-for-ready",
         "build",
         "build-start",
         "shutdown-build-restart",

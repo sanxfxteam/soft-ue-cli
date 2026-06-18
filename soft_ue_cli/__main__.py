@@ -179,79 +179,38 @@ def cmd_shutdown(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _launch_editor_for_wait(path: str) -> None:
-    launch_path = Path(path).expanduser()
-    if not launch_path.exists():
-        print(f"error: launch path not found: {path}", file=sys.stderr)
+def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
+    config_file = config_path or _find_config_file(Path(path))
+    if not config_file:
+        print("error: soft-ue.config.json not found. Ensure you are in the project directory.", file=sys.stderr)
         sys.exit(1)
 
-    if launch_path.suffix.lower() == ".uproject" and hasattr(os, "startfile"):
-        os.startfile(str(launch_path))  # type: ignore[attr-defined]
-        return
+    try:
+        data = json.loads(config_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"error: failed to read config file {config_file}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
+    start_cmd = data.get("start-command")
+    if not start_cmd:
+        print(f"error: 'start-command' not defined in {config_file.name}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Launching editor using start-command: {start_cmd}", file=sys.stderr)
     import subprocess
 
     subprocess.Popen(
-        [str(launch_path)],
+        start_cmd,
+        shell=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        cwd=str(config_file.parent),
     )
 
 
 def _bridge_health_is_ready(health: dict) -> bool:
     return "error" not in health and bool(health)
-
-
-def cmd_wait_for_ready(args: argparse.Namespace) -> None:
-    timeout = float(getattr(args, "timeout", 120.0) or 120.0)
-    poll_interval = float(getattr(args, "poll_interval", 2.0) or 2.0)
-    launch_editor = getattr(args, "launch_editor", None)
-    if launch_editor:
-        _launch_editor_for_wait(launch_editor)
-
-    server_url = get_server_url()
-    start = time.monotonic()
-    attempts = 0
-    last_error = ""
-    last_health: dict = {}
-
-    while True:
-        attempts += 1
-        elapsed = time.monotonic() - start
-        probe_timeout = max(0.2, min(5.0, poll_interval, max(timeout - elapsed, 0.2)))
-        health = health_check(timeout=probe_timeout)
-        last_health = health
-        if _bridge_health_is_ready(health):
-            _print_json({
-                "success": True,
-                "status": "ready",
-                "server_url": server_url,
-                "attempts": attempts,
-                "ready_time_seconds": round(time.monotonic() - start, 1),
-                "health": health,
-            })
-            return
-
-        last_error = str(health.get("error", "bridge not ready"))
-        elapsed = time.monotonic() - start
-        if elapsed >= timeout:
-            print(f"error: bridge did not become ready within {timeout:g}s at {server_url}", file=sys.stderr)
-            if last_error:
-                print(f"last error: {last_error}", file=sys.stderr)
-            _print_json({
-                "success": False,
-                "status": "timeout",
-                "server_url": server_url,
-                "timeout_seconds": timeout,
-                "elapsed_seconds": round(elapsed, 1),
-                "attempts": attempts,
-                "last_error": last_error,
-                "last_health": last_health,
-            })
-            sys.exit(1)
-
-        time.sleep(min(poll_interval, max(timeout - elapsed, 0.0)))
 
 
 def cmd_spawn_actor(args: argparse.Namespace) -> None:
@@ -2702,7 +2661,7 @@ def cmd_build_start(args: argparse.Namespace) -> None:
 
     # 4. Start editor
     print(f"Launching editor for project: {uproject_path.name}", file=sys.stderr)
-    _launch_editor_for_wait(str(uproject_path))
+    _launch_editor_for_wait(str(uproject_path), config_path=config_path)
 
     # 5. Tail follow log file & watch for Angelscript errors
     log_start = time.monotonic()
@@ -2891,30 +2850,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sends a POST request to the bridge server asking it to shut down the Unreal Editor.",
     )
     p_shutdown.set_defaults(func=cmd_shutdown)
-
-    # wait-for-ready
-    p_wfr = sub.add_parser(
-        "wait-for-ready",
-        aliases=["await-bridge"],
-        help="Poll the bridge health probe until it is ready.",
-        description=(
-            "Waits until the SoftUEBridge HTTP server responds to the same internal\n"
-            "health probe used by 'soft-ue-cli status'. This avoids polling unrelated\n"
-            "routes such as /status, which are not public bridge endpoints.\n\n"
-            "EXAMPLES:\n"
-            "  soft-ue-cli wait-for-ready --timeout 120\n"
-            "  soft-ue-cli await-bridge --launch-editor C:/dev/MyGame/MyGame.uproject"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_wfr.add_argument("--timeout", type=float, default=120.0, metavar="SEC", help="Maximum time to wait (default: 120)")
-    p_wfr.add_argument("--poll-interval", type=float, default=2.0, metavar="SEC", help="Seconds between probes (default: 2)")
-    p_wfr.add_argument(
-        "--launch-editor",
-        metavar="PATH",
-        help="Optional .uproject or executable path to launch before polling",
-    )
-    p_wfr.set_defaults(func=cmd_wait_for_ready)
 
     # -------------------------------------------------------------------------
     # Runtime tools

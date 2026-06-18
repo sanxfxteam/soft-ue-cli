@@ -30,8 +30,6 @@ def test_whitelist_is_command_allowed():
     # Allowed infrastructure commands
     assert is_command_allowed("status") is True
     assert is_command_allowed("check-setup") is True
-    assert is_command_allowed("wait-for-ready") is True
-    assert is_command_allowed("await-bridge") is True
 
     # Blocked commands
     assert is_command_allowed("setup") is False
@@ -92,7 +90,6 @@ def test_mcp_server_filters_non_whitelisted_tools():
 
     # Infrastructure commands should be registered (if CLIENT_SIDE_COMMANDS)
     assert "status" in tools
-    assert "wait-for-ready" in tools
     assert "check-setup" in tools
 
     # Blocked tools should NOT be registered
