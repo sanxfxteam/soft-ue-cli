@@ -5192,9 +5192,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_build_start.add_argument(
         "--timeout",
         type=float,
-        default=120.0,
+        default=300.0,
         metavar="SEC",
-        help="Timeout in seconds for the bridge to become ready (default: 120.0)",
+        help="Timeout in seconds for the bridge to become ready (default: 300.0)",
     )
     p_build_start.add_argument(
         "--poll-interval",
@@ -5219,9 +5219,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_sbr.add_argument(
         "--timeout",
         type=float,
-        default=120.0,
+        default=300.0,
         metavar="SEC",
-        help="Timeout in seconds for the bridge to become ready (default: 120.0)",
+        help="Timeout in seconds for the bridge to become ready (default: 300.0)",
     )
     p_sbr.add_argument(
         "--poll-interval",

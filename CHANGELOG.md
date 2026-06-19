@@ -2,6 +2,15 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.32.0] - 2026-06-19
+
+### Changed
+- `build-start` and `shutdown-build-restart` now wait up to 5 minutes (300s) by default for the bridge to become ready, up from 120s. The build subprocess itself remains unbounded.
+- `status` no longer lists bridge tools: the bridge health response drops the `tools` count and `tool_names` array (requires the matching SoftUEBridge plugin build).
+
+### Fixed
+- Non-whitelisted bridge tools are no longer loaded at all (previously registered in memory and only rejected at call time). Requires the matching SoftUEBridge plugin build.
+
 ## [1.31.0] - 2026-05-17
 
 ### Fixed
