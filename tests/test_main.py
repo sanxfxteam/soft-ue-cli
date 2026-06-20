@@ -49,6 +49,7 @@ from soft_ue_cli.__main__ import (
     cmd_query_struct,
     cmd_release_asset_lock,
     cmd_reload_bridge_module,
+    cmd_run_lua_script,
     cmd_run_python_script,
     cmd_save_script,
     cmd_setup,
@@ -520,6 +521,59 @@ def test_run_python_script_path_missing_exits(tmp_path):
         cmd_run_python_script(args)
 
     assert exc.value.code == 1
+
+
+# -- run-lua-script ------------------------------------------------------------
+
+
+def test_run_lua_script_inline():
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script", "--script", "help()"])
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": ""}) as mock_call:
+        cmd_run_lua_script(args)
+    mock_call.assert_called_once_with("run-lua-script", {"script": "help()"})
+
+
+def test_run_lua_script_path_reads_file(tmp_path):
+    script_path = tmp_path / "snippet.lua"
+    script_path.write_text("log('hi')", encoding="utf-8")
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script", "--script-path", str(script_path)])
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": ""}) as mock_call:
+        cmd_run_lua_script(args)
+    mock_call.assert_called_once_with("run-lua-script", {"script_path": str(script_path.resolve())})
+
+
+def test_run_lua_script_no_args_exits():
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script"])
+    with pytest.raises(SystemExit) as exc:
+        cmd_run_lua_script(args)
+    assert exc.value.code == 1
+
+
+def test_run_lua_script_both_args_exits(tmp_path):
+    script_path = tmp_path / "snippet.lua"
+    script_path.write_text("log('hi')", encoding="utf-8")
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script", "--script", "x=1", "--script-path", str(script_path)])
+    with pytest.raises(SystemExit) as exc:
+        cmd_run_lua_script(args)
+    assert exc.value.code == 1
+
+
+def test_run_lua_script_path_missing_exits(tmp_path):
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script", "--script-path", str(tmp_path / "missing.lua")])
+    with pytest.raises(SystemExit) as exc:
+        cmd_run_lua_script(args)
+    assert exc.value.code == 1
+
+
+def test_parser_run_lua_script_func():
+    parser = build_parser()
+    args = parser.parse_args(["run-lua-script", "--script", "help()"])
+    assert args.func == cmd_run_lua_script
 
 
 # -- _validate_script_name -----------------------------------------------------

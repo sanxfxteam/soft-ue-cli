@@ -6,6 +6,7 @@ from __future__ import annotations
 ALLOWED_COMMANDS: frozenset[str] = frozenset({
     # Whitelisted CLI/Bridge commands
     "run-python-script",
+    "run-lua-script",
     "trigger-live-coding",
     "capture-screenshot",
     "capture-viewport",

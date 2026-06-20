@@ -1452,6 +1452,25 @@ def cmd_run_python_script(args: argparse.Namespace) -> None:
     _print_json(_run_tool("run-python-script", arguments))
 
 
+def cmd_run_lua_script(args: argparse.Namespace) -> None:
+    arguments: dict = {}
+    if args.script:
+        arguments["script"] = args.script
+    if args.script_path:
+        script_path = Path(args.script_path).expanduser().resolve()
+        if not script_path.exists():
+            print(f"error: file not found: {args.script_path}", file=sys.stderr)
+            sys.exit(1)
+        arguments["script_path"] = str(script_path)
+    if not arguments:
+        print("error: provide --script or --script-path", file=sys.stderr)
+        sys.exit(1)
+    if args.script and args.script_path:
+        print("error: provide only one of --script or --script-path", file=sys.stderr)
+        sys.exit(1)
+    _print_json(_run_tool("run-lua-script", arguments))
+
+
 def cmd_request_gameplay_tag(args: argparse.Namespace) -> None:
     _print_json(_run_tool("request-gameplay-tag", {"tag_name": args.tag_name}))
 
@@ -4161,6 +4180,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--arguments", metavar="JSON", help="Arguments as JSON object (accessible via unreal.get_mcp_args())"
     )
     p_rps.set_defaults(func=cmd_run_python_script)
+
+    p_rls = sub.add_parser(
+        "run-lua-script",
+        help="Execute a Lua script in-process via the NeoStack plugin.",
+        description=(
+            "Runs Lua through NeoStack's in-process Lua runner (no separate MCP server).\n"
+            "Drives NeoStack's Lua bindings (create_asset, open_asset, read_graph,\n"
+            "playtest_*, screenshot, help(), ...). Requires the NeoStackAI plugin to be\n"
+            "enabled. Provide either --script (inline code) or --script-path (file), not both.\n\n"
+            "The Lua runtime opens only base/string/table/math/coroutine (no require/io/os),\n"
+            "and each call uses a fresh state. To reuse shared Lua in another file, load it\n"
+            "with loadfile (a base builtin); prefer loadfile(path)() over dofile(path) so\n"
+            "async bindings inside the file can yield correctly.\n\n"
+            "EXAMPLES:\n"
+            '  soft-ue-cli run-lua-script --script "help()"\n'
+            '  soft-ue-cli run-lua-script --script "local bp = create_asset(\\"/Game/BP_Foo\\", \\"Blueprint\\"); bp:compile(); bp:save()"\n'
+            "  soft-ue-cli run-lua-script --script-path my_script.lua\n"
+            '  soft-ue-cli run-lua-script --script "local lib = loadfile([[C:/MyGame/Scripts/lib.lua]])(); log(lib.greet())"'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rls.add_argument("--script", metavar="CODE", help="Inline Lua code to execute")
+    p_rls.add_argument("--script-path", metavar="PATH", help="Path to a Lua script file")
+    p_rls.set_defaults(func=cmd_run_lua_script)
 
     p_rgt = sub.add_parser(
         "request-gameplay-tag",

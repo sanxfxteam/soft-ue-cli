@@ -15,6 +15,7 @@ from soft_ue_cli.mcp_server import create_server
 def test_whitelist_is_command_allowed():
     # Allowed whitelisted commands
     assert is_command_allowed("run-python-script") is True
+    assert is_command_allowed("run-lua-script") is True
     assert is_command_allowed("trigger-live-coding") is True
     assert is_command_allowed("capture-screenshot") is True
     assert is_command_allowed("capture-viewport") is True
@@ -80,6 +81,7 @@ def test_mcp_server_filters_non_whitelisted_tools():
 
     # Allowed tools should be registered
     assert "run-python-script" in tools
+    assert "run-lua-script" in tools
     assert "trigger-live-coding" in tools
     assert "capture-screenshot" in tools
     assert "capture-viewport" in tools
