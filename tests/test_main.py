@@ -2097,3 +2097,106 @@ def test_call_function_batch_json_forwards(tmp_path):
         "call-function",
         {"function_name": "Bar", "class_path": "/Game/Foo", "use_cdo": True, "batch": batch},
     )
+
+
+# -- status startup-state handling --------------------------------------------
+
+
+def test_cmd_status_bridge_ready_prints_health(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    health = {"running": True, "version": "1.0"}
+    with patch("soft_ue_cli.__main__.health_check", return_value=health), \
+         patch("soft_ue_cli.__main__._check_angelscript", return_value=(True, "")):
+        main_mod.cmd_status(argparse.Namespace())
+    out = json.loads(capsys.readouterr().out)
+    assert out == health
+
+
+def test_cmd_status_bridge_ready_prints_angelscript_errors(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    health = {"running": True, "version": "1.0"}
+    with patch("soft_ue_cli.__main__.health_check", return_value=health), \
+         patch("soft_ue_cli.__main__._check_angelscript", return_value=(False, "Foo.as (1:2): boom")):
+        main_mod.cmd_status(argparse.Namespace())
+    captured = capsys.readouterr()
+    # Bridge status still printed as JSON on stdout.
+    assert json.loads(captured.out) == health
+    # AngelScript errors printed after, on stderr.
+    assert "boom" in captured.err
+
+
+def test_cmd_status_editor_not_running(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "refused"}), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=[]):
+        main_mod.cmd_status(argparse.Namespace())
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "not_running"
+    assert out["running"] is False
+
+
+def test_cmd_status_loading_with_angelscript_errors(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    procs = [{"projectName": "ProjectShiva", "isLoading": True}]
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "refused"}), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=procs), \
+         patch("soft_ue_cli.__main__._processes_for_local_project", return_value=procs), \
+         patch("soft_ue_cli.__main__._check_angelscript", return_value=(False, "Foo.as (1:2): expected ';'")):
+        main_mod.cmd_status(argparse.Namespace())
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["status"] == "angelscript_errors"
+    assert "expected ';'" in captured.err
+
+
+def test_cmd_status_no_process_command_falls_back_to_health(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    health = {"error": "refused"}
+    with patch("soft_ue_cli.__main__.health_check", return_value=health), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=None):
+        main_mod.cmd_status(argparse.Namespace())
+    out = json.loads(capsys.readouterr().out)
+    assert out == health
+
+
+# -- run-automation AngelScript pre-flight ------------------------------------
+
+
+def test_cmd_run_automation_aborts_on_angelscript_errors(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(tests=["Foo.Bar"], test_timeout=None, json=False)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(False, "Foo.as (1:2): boom")), \
+         patch("soft_ue_cli.__main__.call_tool") as mock_call:
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_run_automation(ns)
+    assert exc.value.code == 1
+    mock_call.assert_not_called()
+    assert "boom" in capsys.readouterr().err
+
+
+def test_cmd_run_automation_runs_when_angelscript_clean():
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(tests=["Foo.Bar"], test_timeout=None, json=True)
+    result = {"success": True, "reports": [], "passed_tests": 0, "total_tests": 0}
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(True, "")), \
+         patch("soft_ue_cli.__main__.call_tool", return_value=result) as mock_call:
+        main_mod.cmd_run_automation(ns)
+    mock_call.assert_called_once()
+
+
+def test_cmd_run_automation_runs_when_check_unavailable():
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(tests=["Foo.Bar"], test_timeout=None, json=True)
+    result = {"success": True, "reports": [], "passed_tests": 0, "total_tests": 0}
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=None), \
+         patch("soft_ue_cli.__main__.call_tool", return_value=result) as mock_call:
+        main_mod.cmd_run_automation(ns)
+    mock_call.assert_called_once()

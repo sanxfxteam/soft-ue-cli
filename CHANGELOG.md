@@ -2,6 +2,16 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.33.0] - 2026-06-25
+
+### Added
+- `status` now inspects the editor process state when the bridge is not yet up: it reports `not_running`, `angelscript_errors` (printing the compile errors), or `loading` (waiting up to 20s for the bridge). Uses the `check-ue-process-command` and `check-angelscript-command` entries in `soft-ue.config.json`.
+- `status` now runs `check-angelscript-command` when the editor is already running and prints any AngelScript compilation errors after the bridge status.
+
+### Changed
+- `run-automation` runs `check-angelscript-command` before starting; if AngelScript has compilation errors it prints them and aborts (exit 1) without running any tests. No-op when the command is not configured.
+- The bridge health response (`status`) no longer includes the `module_paths` array (requires the matching SoftUEBridge plugin build).
+
 ## [1.32.0] - 2026-06-19
 
 ### Changed

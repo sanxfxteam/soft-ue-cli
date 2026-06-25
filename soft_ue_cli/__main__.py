@@ -165,7 +165,62 @@ def _ensure_pie_running(
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    _print_json(health_check())
+    health = health_check()
+    if _bridge_health_is_ready(health):
+        _print_json(health)
+        # Editor is up: surface any AngelScript compilation errors after the
+        # bridge status so they aren't silently ignored.
+        as_result = _check_angelscript()
+        if as_result is not None and not as_result[0]:
+            print("AngelScript has compilation errors:", file=sys.stderr)
+            print(as_result[1].rstrip(), file=sys.stderr)
+        return
+
+    # Bridge is not up yet. Inspect the editor process state to give a useful
+    # answer instead of just a connection error.
+    processes = _check_ue_processes()
+    if processes is None:
+        # No process-check command configured: fall back to the raw health result.
+        _print_json(health)
+        return
+
+    processes = _processes_for_local_project(processes)
+    if not processes:
+        _print_json({
+            "running": False,
+            "status": "not_running",
+            "message": "Unreal Editor is not running.",
+        })
+        return
+
+    # Editor process exists but the bridge isn't responding. Surface any
+    # AngelScript compilation errors that would block startup.
+    as_result = _check_angelscript()
+    if as_result is not None and not as_result[0]:
+        print(as_result[1].rstrip(), file=sys.stderr)
+        _print_json({
+            "running": False,
+            "status": "angelscript_errors",
+            "message": "Editor is loading but AngelScript has compilation errors.",
+        })
+        return
+
+    # No blocking errors: wait for the bridge to come up (timeout 20s).
+    timeout = 20.0
+    print(f"Editor is loading; waiting up to {timeout:g}s for the bridge...", file=sys.stderr)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(1.0)
+        health = health_check(timeout=2.0)
+        if _bridge_health_is_ready(health):
+            _print_json(health)
+            return
+
+    _print_json({
+        "running": False,
+        "status": "loading",
+        "message": f"Editor is still loading (bridge not ready after {timeout:g}s).",
+    })
 
 
 def cmd_shutdown(args: argparse.Namespace) -> None:
@@ -2524,6 +2579,19 @@ def cmd_rewind_save(args: argparse.Namespace) -> None:
 def cmd_run_automation(args: argparse.Namespace) -> None:
     from .errors import BridgeError, ErrorKind
 
+    # Refuse to run tests when AngelScript failed to compile — results would be
+    # meaningless. Skipped silently when the check command isn't configured.
+    as_result = _check_angelscript()
+    if as_result is not None and not as_result[0]:
+        output = as_result[1].rstrip()
+        if getattr(args, "json", False):
+            _print_json({"success": False, "status": "angelscript_errors", "error": output})
+        else:
+            if output:
+                print(output, file=sys.stderr)
+            print("error: AngelScript has compilation errors; aborting run-automation.", file=sys.stderr)
+        sys.exit(1)
+
     if args.test_timeout is None:
         arguments: dict = {"tests": args.tests, "timeout_per_test": 60.0}
         http_timeout = 1800.0
@@ -2604,6 +2672,102 @@ def _find_config_file(start_path: Path | None = None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _load_config_command(key: str, config_path: Path | None = None) -> tuple[str | None, Path | None]:
+    """Return (command_string, config_dir) for a soft-ue.config.json key.
+
+    Returns (None, None) when the config file or key is missing/unreadable.
+    Unlike _load_build_command this never exits — callers treat the commands as
+    best-effort diagnostics.
+    """
+    path = config_path or _find_config_file()
+    if not path:
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    cmd = data.get(key)
+    if not cmd:
+        return None, None
+    return cmd, path.parent
+
+
+def _check_ue_processes(config_path: Path | None = None) -> list[dict] | None:
+    """Run the configured check-ue-process-command and return the process list.
+
+    Returns None when the command is not configured, so callers can fall back to
+    legacy behavior. Returns an empty list when no Unreal processes are running.
+    """
+    import re
+    import subprocess
+
+    cmd, cwd = _load_config_command("check-ue-process-command", config_path)
+    if not cmd:
+        return None
+    # Ensure JSON output regardless of how the command is configured.
+    if "--json" not in cmd:
+        cmd = f"{cmd} --json"
+    try:
+        proc = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True)
+    except Exception:
+        return None
+
+    match = re.search(r"[\[{][\s\S]*[\]}]", proc.stdout or "")
+    if not match:
+        return []
+    try:
+        parsed = json.loads(match.group(0))
+    except Exception:
+        return []
+    if isinstance(parsed, dict):
+        return [parsed]
+    return parsed if isinstance(parsed, list) else []
+
+
+def _check_angelscript(config_path: Path | None = None) -> tuple[bool, str] | None:
+    """Run the configured check-angelscript-command.
+
+    Returns (ok, output) where ok is True when AngelScript compiled cleanly
+    (exit code 0). output is the combined stdout/stderr text. Returns None when
+    the command is not configured.
+    """
+    import subprocess
+
+    cmd, cwd = _load_config_command("check-angelscript-command", config_path)
+    if not cmd:
+        return None
+    try:
+        proc = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True)
+    except Exception:
+        return None
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode == 0, output
+
+
+def _processes_for_local_project(processes: list[dict]) -> list[dict]:
+    """Filter UE processes to those matching the local .uproject.
+
+    Falls back to the full list when the local project can't be determined or
+    none of the processes match, keeping callers safe from false negatives.
+    """
+    try:
+        root = _find_project_root_local()
+        uprojects = list(root.glob("*.uproject"))
+        if not uprojects:
+            return processes
+        name = uprojects[0].stem.lower()
+    except Exception:
+        return processes
+
+    matched = [
+        p
+        for p in processes
+        if name in str(p.get("projectName", "")).lower()
+        or name in str(p.get("projectPath", "")).lower()
+    ]
+    return matched or processes
 
 
 def _load_build_command(config_path: Path | None = None) -> str:

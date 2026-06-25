@@ -9,7 +9,7 @@ description: How to use the soft-ue-cli command-line interface or MCP server to 
 
 ## Diagnostics
 Verify the plugin installation and connection using these commands:
-- `soft-ue-cli status` -- queries the running bridge server for health statistics and registered tools.
+- `soft-ue-cli status` -- queries the running bridge server for health statistics. When the editor is running, it also runs `check-angelscript-command` and prints any AngelScript compilation errors after the bridge status. When the bridge is not up yet, it inspects the editor process state (`check-ue-process-command` in `soft-ue.config.json`) and reports one of: `not_running` (editor not started), `angelscript_errors` (editor loading but AngelScript failed to compile — errors are printed), or `loading` (editor still starting; waits up to 20s for the bridge before giving up).
 
 ## Build & Relaunch Workflow
 When making C++ changes or editing Angelscript scripts, use these commands to compile and restart the editor:
@@ -18,7 +18,7 @@ When making C++ changes or editing Angelscript scripts, use these commands to co
 
 ## Running Automation Tests
 Automation spec/integration tests can be run from the command line:
-- `soft-ue-cli run-automation <TestPattern>` -- runs tests via the Session Frontend and prints PASS/FAIL status. Supports wildcard filters (e.g. `ProjectShiva.Abilities.*`).
+- `soft-ue-cli run-automation <TestPattern>` -- runs tests via the Session Frontend and prints PASS/FAIL status. Supports wildcard filters (e.g. `ProjectShiva.Abilities.*`). Before running, it executes `check-angelscript-command` (from `soft-ue.config.json`); if AngelScript has compilation errors it prints them and aborts with exit 1 without running any tests.
 - Overrides: Use `--test-timeout <seconds>` to set a custom maximum execution limit.
 - Note: On first launch, the local automation controller worker might be inactive. `run-automation` includes self-healing logic that automatically bootstraps the controller if 0 tests are discovered initially.
 
