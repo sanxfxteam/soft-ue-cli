@@ -19,6 +19,7 @@ from soft_ue_cli.__main__ import (
     _parse_vector,
     _validate_script_name,
     _wait_for_build_and_relaunch,
+    _wait_for_ue_shutdown,
     build_parser,
     cmd_add_datatable_row,
     cmd_add_co_group_child,
@@ -788,6 +789,94 @@ def test_wait_for_build_and_relaunch_timeout_reports_last_stage(tmp_path, capsys
     assert "last stage: building" in captured.err
     assert str(status_path) in captured.err
     assert str(log_path) in captured.err
+
+
+# -- _wait_for_ue_shutdown -----------------------------------------------------
+
+
+def test_wait_for_ue_shutdown_skips_when_command_unconfigured(monkeypatch):
+    # _check_ue_processes returns None when check-ue-process-command isn't set.
+    monkeypatch.setattr("soft_ue_cli.__main__._check_ue_processes", lambda *a, **k: None)
+
+    result = _wait_for_ue_shutdown(30.0)
+
+    assert result == {"exited": True, "killed": False}
+
+
+def test_wait_for_ue_shutdown_returns_when_process_exits(monkeypatch):
+    # First poll sees the process, later polls see it gone.
+    polls = [[{"pid": 123}], [{"pid": 123}], []]
+
+    def fake_check(*_a, **_k):
+        return polls.pop(0) if polls else []
+
+    monkeypatch.setattr("soft_ue_cli.__main__._check_ue_processes", fake_check)
+    monkeypatch.setattr("soft_ue_cli.__main__._processes_for_local_project", lambda p: p)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+
+    result = _wait_for_ue_shutdown(30.0)
+
+    assert result == {"exited": True, "killed": False}
+
+
+def test_wait_for_ue_shutdown_force_kills_on_timeout(monkeypatch):
+    killed = []
+
+    monkeypatch.setattr(
+        "soft_ue_cli.__main__._check_ue_processes", lambda *a, **k: [{"pid": 999}]
+    )
+    monkeypatch.setattr("soft_ue_cli.__main__._processes_for_local_project", lambda p: p)
+    monkeypatch.setattr(
+        "soft_ue_cli.__main__._kill_ue_process",
+        lambda pid, *a, **k: killed.append(pid) or True,
+    )
+
+    # Advance the clock past every deadline so both the wait loop and the
+    # post-kill verification loop expire immediately.
+    clock = {"now": 0.0}
+    monkeypatch.setattr("time.sleep", lambda _s: clock.__setitem__("now", clock["now"] + 100.0))
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+
+    result = _wait_for_ue_shutdown(5.0)
+
+    assert killed == [999]
+    assert result == {"exited": False, "killed": True}
+
+
+def test_wait_for_ue_shutdown_exits_after_force_kill(monkeypatch):
+    # Process survives the graceful wait, then disappears once it's killed.
+    state = {"alive": True}
+
+    def fake_check(*_a, **_k):
+        return [{"pid": 7}] if state["alive"] else []
+
+    def fake_kill(pid, *_a, **_k):
+        state["alive"] = False
+        return True
+
+    monkeypatch.setattr("soft_ue_cli.__main__._check_ue_processes", fake_check)
+    monkeypatch.setattr("soft_ue_cli.__main__._processes_for_local_project", lambda p: p)
+    monkeypatch.setattr("soft_ue_cli.__main__._kill_ue_process", fake_kill)
+
+    clock = {"now": 0.0}
+    # Cross the wait deadline on the first sleep so we escalate to kill quickly.
+    monkeypatch.setattr("time.sleep", lambda _s: clock.__setitem__("now", clock["now"] + 10.0))
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+
+    result = _wait_for_ue_shutdown(5.0)
+
+    assert result == {"exited": True, "killed": True}
+
+
+def test_shutdown_parser_has_wait_timeout():
+    parser = build_parser()
+    args = parser.parse_args(["shutdown", "--wait-timeout", "12"])
+    assert args.wait_timeout == 12.0
+    # Default applies when omitted.
+    assert parser.parse_args(["shutdown"]).wait_timeout == 30.0
 
 
 def test_cmd_trigger_live_coding_forwards_scope_args():

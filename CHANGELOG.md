@@ -2,6 +2,12 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.34.0] - 2026-06-28
+
+### Changed
+- `shutdown` now waits until the editor process has fully exited instead of returning as soon as the bridge accepts the request. It polls `check-ue-process-command` for the local project's process and, if it doesn't exit within `--wait-timeout` seconds (default 30), force-kills the process tree and reports `"killed": true`. No-op wait when `check-ue-process-command` is not configured.
+- `shutdown-build-restart` replaces its fixed 3-second sleep with the same process wait, so the rebuild only starts once the editor process is gone (avoids racing file/Live Coding locks and the bound bridge port). Adds `--wait-timeout`.
+
 ## [1.33.0] - 2026-06-25
 
 ### Added

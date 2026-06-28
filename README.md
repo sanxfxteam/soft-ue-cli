@@ -163,7 +163,7 @@ These commands are fully permitted to run in both the CLI client and the Unreal 
 |---|---|---|
 | **Setup & Diagnostics** | `status` | Health check -- returns server status |
 | | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
-| | `shutdown` | Request the Unreal Editor and bridge server to shut down and close |
+| | `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
 | **Asset & Visual Capture** | `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
 | | `capture-viewport` | Capture the current viewport |
 | **Engine Control & Scripting** | `run-python-script` | Execute a Python script inside UE's embedded Python interpreter |
@@ -186,7 +186,7 @@ These commands are fully permitted to run in whitelisted mode (both in the CLI c
 |---------|-------------|
 | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
 | `status` | Health check -- returns server status |
-| `shutdown` | Request the Unreal Editor and bridge server to shut down and close cleanly |
+| `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
 
 #### Play-In-Editor & Scripting
 
@@ -595,6 +595,15 @@ soft-ue-cli insights-analyze latest --analysis-type cpu
 
 ```bash
 soft-ue-cli shutdown
+```
+
+`shutdown` requests a clean shutdown via the bridge, then polls the configured
+`check-ue-process-command` until the editor process for the local project has
+fully exited. If it doesn't exit within `--wait-timeout` seconds (default 30),
+the process tree is force-killed and the result JSON reports `"killed": true`.
+
+```bash
+soft-ue-cli shutdown --wait-timeout 60
 ```
 
 ### Use as an MCP server (Claude Desktop, Cursor, etc.)

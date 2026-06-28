@@ -14,7 +14,8 @@ Verify the plugin installation and connection using these commands:
 ## Build & Relaunch Workflow
 When making C++ changes or editing Angelscript scripts, use these commands to compile and restart the editor:
 - `soft-ue-cli build-start` -- runs the build command, launches the editor, and tail-follows the log file in real-time, printing any Angelscript compilation errors (`LogAngelscript: Error:`) until the bridge becomes ready.
-- `soft-ue-cli shutdown-build-restart` -- requests editor shutdown via the bridge, wait a moment, runs the build command, and launches the editor while monitoring for errors.
+- `soft-ue-cli shutdown-build-restart` -- requests editor shutdown via the bridge, waits until the editor process has fully exited (polling `check-ue-process-command`, force-killing after `--wait-timeout`), runs the build command, and launches the editor while monitoring for errors.
+- `soft-ue-cli shutdown` -- requests editor shutdown via the bridge and waits until the editor process has fully exited. Force-kills the process tree if it doesn't exit within `--wait-timeout` seconds (default 30) and reports `"killed": true`.
 
 ## Running Automation Tests
 Automation spec/integration tests can be run from the command line:

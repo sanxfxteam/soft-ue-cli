@@ -227,10 +227,31 @@ def cmd_shutdown(args: argparse.Namespace) -> None:
     from .client import shutdown as client_shutdown
     from .errors import BridgeError
     try:
-        res = client_shutdown()
-        _print_json({"success": True, "message": "Editor shutdown requested successfully."})
+        client_shutdown()
+        print("Editor shutdown requested successfully.", file=sys.stderr)
     except BridgeError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
+        # Bridge may already be down; the editor process can still be present
+        # (e.g. hung). Fall through to the process wait/kill instead of failing.
+        print(
+            f"Warning: shutdown request failed (bridge may be down): {exc.message}",
+            file=sys.stderr,
+        )
+
+    result = _wait_for_ue_shutdown(args.wait_timeout)
+    if result["exited"] and result["killed"]:
+        _print_json({
+            "success": True,
+            "killed": True,
+            "message": "Editor process did not exit gracefully; force-killed.",
+        })
+    elif result["exited"]:
+        _print_json({"success": True, "message": "Editor shut down and process exited."})
+    else:
+        _print_json({
+            "success": False,
+            "killed": True,
+            "message": "Editor process did not exit even after a force-kill.",
+        })
         sys.exit(1)
 
 
@@ -2770,6 +2791,70 @@ def _processes_for_local_project(processes: list[dict]) -> list[dict]:
     return matched or processes
 
 
+def _kill_ue_process(pid: int, config_path: Path | None = None) -> bool:
+    """Force-kill a UE process tree via the configured check-ue-process-command.
+
+    Runs the command with `--kill <pid>` appended. Best-effort: returns False
+    (without raising) when the command is unconfigured or the kill fails.
+    """
+    import subprocess
+
+    cmd, cwd = _load_config_command("check-ue-process-command", config_path)
+    if not cmd:
+        return False
+    try:
+        proc = subprocess.run(
+            f"{cmd} --kill {pid}", shell=True, cwd=str(cwd), capture_output=True, text=True
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _wait_for_ue_shutdown(timeout: float, config_path: Path | None = None) -> dict:
+    """Wait until the local project's UE process has fully exited.
+
+    Polls the configured check-ue-process-command. On timeout, force-kills any
+    remaining processes and re-polls briefly to confirm. Returns a result dict:
+      {"exited": bool, "killed": bool}
+    "exited" is True when no local UE process remains. "killed" is True when a
+    force-kill was attempted. When the process-check command is not configured,
+    returns immediately with exited=True (best-effort, legacy behavior).
+    """
+    procs = _check_ue_processes(config_path)
+    if procs is None:
+        return {"exited": True, "killed": False}
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = _processes_for_local_project(_check_ue_processes(config_path) or [])
+        if not remaining:
+            print("Editor process exited.", file=sys.stderr)
+            return {"exited": True, "killed": False}
+        if time.monotonic() >= deadline:
+            break
+        print("Waiting for editor process to exit...", file=sys.stderr)
+        time.sleep(1.0)
+
+    # Timed out: escalate to a force-kill of each remaining process tree.
+    print(
+        f"Editor did not exit within {timeout:g}s; force-killing.", file=sys.stderr
+    )
+    for proc in remaining:
+        pid = proc.get("pid")
+        if pid is not None:
+            _kill_ue_process(int(pid), config_path)
+
+    kill_deadline = time.monotonic() + 5.0
+    while time.monotonic() < kill_deadline:
+        remaining = _processes_for_local_project(_check_ue_processes(config_path) or [])
+        if not remaining:
+            return {"exited": True, "killed": True}
+        time.sleep(1.0)
+
+    return {"exited": False, "killed": True}
+
+
 def _load_build_command(config_path: Path | None = None) -> str:
     path = config_path or _find_config_file()
     if not path:
@@ -2914,11 +2999,14 @@ def cmd_shutdown_build_restart(args: argparse.Namespace) -> None:
     from .errors import BridgeError
     try:
         client_shutdown()
-        print("Editor shutdown requested successfully. Waiting a moment for it to close...", file=sys.stderr)
-        time.sleep(3.0)
+        print("Editor shutdown requested successfully. Waiting for it to close...", file=sys.stderr)
     except BridgeError as exc:
         print(f"Warning: could not shut down editor (already closed or unreachable): {exc.message}", file=sys.stderr)
-    
+
+    # Ensure the editor process is fully gone before rebuilding so we don't race
+    # file locks (Live Coding lock, bound port, etc.).
+    _wait_for_ue_shutdown(args.wait_timeout)
+
     cmd_build_start(args)
 
 
@@ -3030,7 +3118,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_shutdown = sub.add_parser(
         "shutdown",
         help="Request the Unreal Editor and bridge server to shut down and close.",
-        description="Sends a POST request to the bridge server asking it to shut down the Unreal Editor.",
+        description=(
+            "Sends a POST request to the bridge server asking it to shut down the Unreal Editor, "
+            "then waits (polling check-ue-process-command) until the process has fully exited, "
+            "force-killing it if it does not exit within --wait-timeout."
+        ),
+    )
+    p_shutdown.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Seconds to wait for the editor process to exit before force-killing (default: 30).",
     )
     p_shutdown.set_defaults(func=cmd_shutdown)
 
@@ -5436,6 +5535,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         metavar="SEC",
         help="Polling interval in seconds for the bridge health check (default: 2.0)",
+    )
+    p_sbr.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Seconds to wait for the editor process to exit before force-killing it, prior to rebuilding (default: 30).",
     )
     p_sbr.set_defaults(func=cmd_shutdown_build_restart)
 
