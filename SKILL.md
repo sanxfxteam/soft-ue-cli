@@ -25,7 +25,7 @@ Automation spec/integration tests can be run from the command line:
 
 ## Scripting
 Run scripts inside the editor through the bridge:
-- `soft-ue-cli run-python-script --script "..."` (or `--script-path file.py`) -- executes Python in the editor's Python environment (requires the Python Editor Script Plugin).
+- `soft-ue-cli run-python-script --script "..."` (or `--script-path file.py`) -- executes Python in the editor's Python environment. Supports `--capture-logs` (optionally filtered by `--log-filter` or `--log-category`) to capture and print UE console logs emitted during execution, and `--json` to output raw JSON results instead of plaintext output.
 - `soft-ue-cli run-lua-script --script "..."` (or `--script-path file.lua`) -- executes Lua in-process through the NeoStack plugin's Lua runner (requires the NeoStackAI plugin).
 
 ### Reusing Lua across calls## Lua Scripting

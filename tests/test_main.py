@@ -524,6 +524,53 @@ def test_run_python_script_path_missing_exits(tmp_path):
     assert exc.value.code == 1
 
 
+def test_run_python_script_capture_logs():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script", "print('hello')",
+        "--capture-logs",
+        "--log-filter", "LogTemp",
+        "--log-category", "Warning",
+    ])
+    assert args.capture_logs is True
+    assert args.log_filter == "LogTemp"
+    assert args.log_category == "Warning"
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": "hello", "console_logs": ["line1", "line2"]}) as mock_call:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {
+            "script": "print('hello')",
+            "capture_logs": True,
+            "log_filter": "LogTemp",
+            "log_category": "Warning",
+        }
+    )
+
+
+def test_run_python_script_json_flag():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script", "print('hello')",
+        "--json",
+    ])
+    assert args.json is True
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": "hello"}) as mock_call, \
+         patch("soft_ue_cli.__main__._print_json") as mock_print_json:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {"script": "print('hello')"}
+    )
+    mock_print_json.assert_called_once_with({"success": True, "output": "hello"})
+
+
 # -- run-lua-script ------------------------------------------------------------
 
 

@@ -1525,7 +1525,33 @@ def cmd_run_python_script(args: argparse.Namespace) -> None:
         arguments["world"] = args.world
     if args.arguments:
         arguments["arguments"] = _parse_json_arg(args.arguments, "--arguments")
-    _print_json(_run_tool("run-python-script", arguments))
+    if getattr(args, "capture_logs", False):
+        arguments["capture_logs"] = True
+    if getattr(args, "log_filter", None):
+        arguments["log_filter"] = args.log_filter
+    if getattr(args, "log_category", None):
+        arguments["log_category"] = args.log_category
+
+    res = _run_tool("run-python-script", arguments)
+
+    if getattr(args, "json", False):
+        _print_json(res)
+        if res.get("success", True) is False:
+            sys.exit(1)
+        return
+
+    # Print log lines if captured
+    if getattr(args, "capture_logs", False) and "console_logs" in res and res["console_logs"]:
+        for line in res["console_logs"]:
+            print(line)
+
+    # Print Python script stdout/stderr output
+    if "output" in res and res["output"]:
+        print(res["output"])
+
+    if res.get("success", True) is False:
+        print(f"error: {res.get('error', 'Unknown python error')}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_run_lua_script(args: argparse.Namespace) -> None:
@@ -4441,6 +4467,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_rps.add_argument("--pie-timeout", type=float, default=30.0, metavar="SEC", help="Timeout for PIE auto-start (default: 30)")
     p_rps.add_argument(
         "--arguments", metavar="JSON", help="Arguments as JSON object (accessible via unreal.get_mcp_args())"
+    )
+    p_rps.add_argument(
+        "--capture-logs",
+        action="store_true",
+        help="Capture and print UE console log lines emitted during the run",
+    )
+    p_rps.add_argument(
+        "--log-filter",
+        metavar="TEXT",
+        help="Case-insensitive substring filter for captured console logs",
+    )
+    p_rps.add_argument(
+        "--log-category",
+        metavar="CAT",
+        help="Category filter for captured console logs (e.g. LogTemp)",
+    )
+    p_rps.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON results",
     )
     p_rps.set_defaults(func=cmd_run_python_script)
 
