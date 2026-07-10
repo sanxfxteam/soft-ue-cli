@@ -2907,31 +2907,51 @@ def _find_project_root_local() -> Path:
     return current
 
 
-def cmd_build(args: argparse.Namespace) -> None:
+def _run_build_command(build_cmd: str, *, heartbeat_interval: float = 30.0) -> int:
+    """Run the configured build command, printing a heartbeat while it's blocking.
+
+    build_cmd's own stdout/stderr are inherited (whatever it prints streams
+    straight through), but a slow or --quiet build can go minutes with no
+    output at all, which looks identical to a hang. The heartbeat below is
+    printed by this process regardless, so there's always a "still alive"
+    signal even when the build itself is silent.
+    """
     import subprocess
+
+    print(f"Executing build command: {build_cmd}", file=sys.stderr)
+    start = time.monotonic()
+    process = subprocess.Popen(build_cmd, shell=True)
+    last_heartbeat = start
+    while process.poll() is None:
+        time.sleep(1.0)
+        now = time.monotonic()
+        if now - last_heartbeat >= heartbeat_interval:
+            print(f"Still building... ({now - start:.0f}s elapsed)", file=sys.stderr)
+            last_heartbeat = now
+
+    elapsed = time.monotonic() - start
+    if process.returncode == 0:
+        print(f"Build command finished in {elapsed:.0f}s.", file=sys.stderr)
+    return process.returncode
+
+
+def cmd_build(args: argparse.Namespace) -> None:
     config_path = Path(args.config) if getattr(args, "config", None) else None
     build_cmd = _load_build_command(config_path)
-    print(f"Executing build command: {build_cmd}", file=sys.stderr)
-    
-    process = subprocess.Popen(build_cmd, shell=True)
-    process.wait()
-    if process.returncode != 0:
-        print(f"error: build command failed with exit code {process.returncode}", file=sys.stderr)
-        sys.exit(process.returncode)
+    returncode = _run_build_command(build_cmd)
+    if returncode != 0:
+        print(f"error: build command failed with exit code {returncode}", file=sys.stderr)
+        sys.exit(returncode)
 
 
 def cmd_build_start(args: argparse.Namespace) -> None:
-    import subprocess
     # 1. Run build
     config_path = Path(args.config) if getattr(args, "config", None) else None
     build_cmd = _load_build_command(config_path)
-    print(f"Executing build command: {build_cmd}", file=sys.stderr)
-    
-    process = subprocess.Popen(build_cmd, shell=True)
-    process.wait()
-    if process.returncode != 0:
-        print(f"error: build command failed with exit code {process.returncode}", file=sys.stderr)
-        sys.exit(process.returncode)
+    returncode = _run_build_command(build_cmd)
+    if returncode != 0:
+        print(f"error: build command failed with exit code {returncode}", file=sys.stderr)
+        sys.exit(returncode)
 
     # 2. Find .uproject
     project_root = _find_project_root_local()
@@ -2972,6 +2992,8 @@ def cmd_build_start(args: argparse.Namespace) -> None:
     timeout = float(getattr(args, "timeout", 120.0) or 120.0)
     poll_interval = float(getattr(args, "poll_interval", 2.0) or 2.0)
     start_time = time.monotonic()
+    last_heartbeat_elapsed = 0.0
+    heartbeat_interval = 30.0
 
     print("Watching logs for Angelscript errors...", file=sys.stderr)
     try:
@@ -2988,6 +3010,9 @@ def cmd_build_start(args: argparse.Namespace) -> None:
 
             # Check if the bridge is ready
             elapsed = time.monotonic() - start_time
+            if elapsed - last_heartbeat_elapsed >= heartbeat_interval:
+                print(f"Still waiting for bridge... ({elapsed:.0f}s elapsed)", file=sys.stderr)
+                last_heartbeat_elapsed = elapsed
             probe_timeout = max(0.2, min(5.0, poll_interval, max(timeout - elapsed, 0.2)))
             health = health_check(timeout=probe_timeout)
             if _bridge_health_is_ready(health):
