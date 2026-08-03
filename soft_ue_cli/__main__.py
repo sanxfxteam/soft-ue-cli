@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -104,6 +105,36 @@ def _parse_json_object_arg(value: object, flag: str) -> dict:
         print(f"error: {flag} must be a JSON object", file=sys.stderr)
         sys.exit(1)
     return parsed
+
+
+_INT_LITERAL = re.compile(r"^[+-]?\d+$")
+_FLOAT_LITERAL = re.compile(r"^[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?$")
+
+
+def _coerce_scalar(raw: str) -> object:
+    """Auto-type a KEY=VALUE value: true/false to bool, numeric literals to int/float, else str."""
+    lowered = raw.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if _INT_LITERAL.match(raw):
+        return int(raw)
+    if _FLOAT_LITERAL.match(raw):
+        return float(raw)
+    return raw
+
+
+def _parse_key_value_args(pairs: list[str] | None, flag: str) -> dict:
+    """Build a dict from repeatable KEY=VALUE flags, auto-typing each value. Last one wins."""
+    result: dict = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            print(f"error: {flag} expects KEY=VALUE, got '{pair}'", file=sys.stderr)
+            sys.exit(1)
+        result[key] = _coerce_scalar(raw)
+    return result
 
 
 def _parse_optional_int_list(value: object | None) -> list[int] | None:
@@ -1523,8 +1554,11 @@ def cmd_run_python_script(args: argparse.Namespace) -> None:
                 command_name="run-python-script",
             )
         arguments["world"] = args.world
-    if args.arguments:
-        arguments["arguments"] = _parse_json_arg(args.arguments, "--arguments")
+    set_args = getattr(args, "set_args", None)
+    if args.arguments or set_args:
+        script_arguments = _parse_json_object_arg(args.arguments, "--arguments") if args.arguments else {}
+        script_arguments.update(_parse_key_value_args(set_args, "--set"))
+        arguments["arguments"] = script_arguments
     if getattr(args, "capture_logs", False):
         arguments["capture_logs"] = True
     if getattr(args, "log_filter", None):
@@ -4470,10 +4504,16 @@ def build_parser() -> argparse.ArgumentParser:
             "File execution preserves normal Python file semantics such as __file__ and\n"
             "__future__ imports. Editor map-loading APIs are rejected because they can tear\n"
             "down the active Python execution context.\n\n"
+            "PASSING VARIABLES:\n"
+            "Use --arguments (full JSON object) and/or --set KEY=VALUE (repeatable, auto-typed).\n"
+            "Both are merged into one object the script reads with unreal.get_mcp_args();\n"
+            "--set overrides keys of the same name from --arguments. Environment variables set\n"
+            "in the calling shell do NOT reach the editor's Python process — use these instead.\n\n"
             "EXAMPLES:\n"
             '  soft-ue-cli run-python-script --script "import unreal; print(unreal.SystemLibrary.get_engine_version())"\n'
             "  soft-ue-cli run-python-script --script-path /path/to/my_script.py\n"
             "  soft-ue-cli run-python-script --script-path my_script.py --arguments '{\"count\": 5}'\n"
+            "  soft-ue-cli run-python-script --script-path my_script.py --set phase=shells --set dry_run=true\n"
             "  soft-ue-cli run-python-script --script-path inspect_runtime.py --world pie"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -4492,6 +4532,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_rps.add_argument("--pie-timeout", type=float, default=30.0, metavar="SEC", help="Timeout for PIE auto-start (default: 30)")
     p_rps.add_argument(
         "--arguments", metavar="JSON", help="Arguments as JSON object (accessible via unreal.get_mcp_args())"
+    )
+    p_rps.add_argument(
+        "--set",
+        dest="set_args",
+        metavar="KEY=VALUE",
+        action="append",
+        help=(
+            "Repeatable argument pair merged into --arguments (--set wins on conflicts). "
+            "Values are auto-typed: true/false to bool, numbers to int/float, everything else to string"
+        ),
     )
     p_rps.add_argument(
         "--capture-logs",

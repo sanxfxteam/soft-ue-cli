@@ -193,7 +193,7 @@ These commands are fully permitted to run in whitelisted mode (both in the CLI c
 | Command | Description |
 |---------|-------------|
 | `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
-| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path` and exposing optional PIE-world helpers |
+| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path`, exposing optional PIE-world helpers, and passing variables via `--set KEY=VALUE` / `--arguments` (read with `unreal.get_mcp_args()`) |
 
 #### Visual Capture
 

@@ -551,6 +551,101 @@ def test_run_python_script_capture_logs():
     )
 
 
+def test_run_python_script_set_builds_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script", "print('hello')",
+        "--set", "phase=shells",
+        "--set", "dry_run=true",
+        "--set", "disabled=FALSE",
+        "--set", "count=5",
+        "--set", "scale=1.5",
+        "--set", "exponent=1e3",
+        "--set", "version=1.2.3",
+        "--set", "path=D:\\Projects\\a b",
+        "--set", "empty=",
+    ])
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": ""}) as mock_call:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {
+            "script": "print('hello')",
+            "arguments": {
+                "phase": "shells",
+                "dry_run": True,
+                "disabled": False,
+                "count": 5,
+                "scale": 1.5,
+                "exponent": 1000.0,
+                "version": "1.2.3",
+                "path": "D:\\Projects\\a b",
+                "empty": "",
+            },
+        },
+    )
+
+
+def test_run_python_script_set_overrides_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script", "print('hello')",
+        "--arguments", '{"phase": "meshes", "keep": 1}',
+        "--set", "phase=shells",
+        "--set", "phase=final",
+    ])
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": ""}) as mock_call:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {
+            "script": "print('hello')",
+            "arguments": {"phase": "final", "keep": 1},
+        },
+    )
+
+
+@pytest.mark.parametrize("pair", ["phase", "=shells"])
+def test_run_python_script_set_malformed_exits(pair):
+    parser = build_parser()
+    args = parser.parse_args(["run-python-script", "--script", "print('x')", "--set", pair])
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_run_python_script(args)
+
+    assert exc.value.code == 1
+
+
+def test_run_python_script_arguments_accepts_native_dict():
+    parser = build_parser()
+    args = parser.parse_args(["run-python-script", "--script", "print('x')"])
+    args.arguments = {"phase": "shells"}
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"success": True, "output": ""}) as mock_call:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {"script": "print('x')", "arguments": {"phase": "shells"}},
+    )
+
+
+def test_run_python_script_arguments_rejects_non_object():
+    parser = build_parser()
+    args = parser.parse_args(["run-python-script", "--script", "print('x')", "--arguments", "[1, 2]"])
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_run_python_script(args)
+
+    assert exc.value.code == 1
+
+
 def test_run_python_script_json_flag():
     parser = build_parser()
     args = parser.parse_args([

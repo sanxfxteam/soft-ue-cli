@@ -82,6 +82,13 @@ TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
             "modifications": {"type": "array", "description": "Array of actor modification specs"},
         },
     },
+    # run-python-script: arguments is a JSON object, set_args a list of "KEY=VALUE" strings
+    "run-python-script": {
+        "properties": {
+            "arguments": {"type": "any", "description": "Arguments object the script reads via unreal.get_mcp_args()"},
+            "set_args": {"type": "array", "description": "KEY=VALUE strings merged into arguments (these win on conflicts)"},
+        },
+    },
     # add-graph-node: position is an [X, Y] array
     "add-graph-node": {
         "properties": {

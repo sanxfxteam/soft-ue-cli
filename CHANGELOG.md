@@ -2,6 +2,19 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.35.0] - 2026-08-03
+
+### Added
+- `run-python-script --set KEY=VALUE` (repeatable) builds the script arguments object without hand-writing JSON. Values are auto-typed: `true`/`false` to booleans, integer/float literals to numbers, everything else to strings. Merged on top of `--arguments` (`--set` wins on conflicting keys; the last `--set` wins among duplicates).
+
+### Changed
+- `run-python-script --arguments` now rejects JSON that is not an object (the bridge only accepts an object) and accepts a native dict when called through the MCP server.
+- `SKILL.md` documents that shell environment variables never reach the editor's Python process, and that `--set` / `--arguments` + `unreal.get_mcp_args()` is the supported way to pass variables.
+
+### Fixed
+- Script arguments are now base64-encoded between the plugin and the editor's Python interpreter. Previously the JSON was embedded as a `'''...'''` Python literal, so a value containing a backslash, quote, or newline (e.g. a Windows path) silently corrupted `unreal.get_mcp_args()` or failed with a `SyntaxError`. Requires the matching SoftUEBridge plugin build.
+- `unreal.get_mcp_args()` no longer returns the previous run's arguments when a script is run without any; it always reflects the current run and is an empty dict when nothing was passed. Requires the matching SoftUEBridge plugin build.
+
 ## [1.34.0] - 2026-06-28
 
 ### Changed
