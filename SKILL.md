@@ -28,6 +28,15 @@ Run scripts inside the editor through the bridge:
 - `soft-ue-cli run-python-script --script "..."` (or `--script-path file.py`) -- executes Python in the editor's Python environment. Supports `--capture-logs` (optionally filtered by `--log-filter` or `--log-category`) to capture and print UE console logs emitted during execution, and `--json` to output raw JSON results instead of plaintext output.
 - `soft-ue-cli run-lua-script --script "..."` (or `--script-path file.lua`) -- executes Lua in-process through the NeoStack plugin's Lua runner (requires the NeoStackAI plugin).
 
+### Compact toolset access (prefer over Unreal MCP JSON calls)
+The Unreal toolsets (BlueprintTools, SceneTools, UMGToolSet, …) are callable from both script runtimes as `T.<Toolset>.<tool>(...)`. Docs are ~10× smaller than the MCP schemas, and one script chains many calls:
+- Discover: `T.docs()` (toolsets), `T.docs('BlueprintTools')` (signatures), `T.docs('BlueprintTools.connect_pins')` (details), `T.search('pin')`.
+- Call: positional args in schema order or named (`B.create_node{graph=g, ...}` in Lua, keywords in Python); object params take path strings or earlier results; print results with `T.fmt(x)` or just the fields you need.
+- Python: `from soft_ue_toolsets import T` (shipped in the SoftUEBridge plugin; async tools raise). Lua: `T` is global (NeoStackAI plugin; awaits async tools, mixes with `playtest_*` etc.).
+- **No Unreal MCP needed:** calls go in-process to the `ToolsetRegistry` plugin. The `ModelContextProtocol` plugin does not have to be running or enabled; only `ToolsetRegistry` plus the toolset plugins (`EditorToolset`, or `AllToolsets`) must be enabled.
+- `T.available()` is false when the ToolsetRegistry plugin isn't loaded; calls to missing toolsets raise clear errors.
+- Details: `SoftUEBridge/Docs/PythonToolsets.md`, `NeoStackAI/Docs/Mods/LuaUEToolsets.md`.
+
 ### Passing variables to a Python script
 The script runs inside the **editor's** Python process, so environment variables exported in your shell (`$env:MY_PHASE=...`, `export MY_PHASE=...`) never reach it. Pass values as arguments instead:
 
@@ -48,8 +57,8 @@ phase = args.get("phase", "all")     # "shells"
 dry_run = args.get("dry_run", False)  # True (a real bool)
 ```
 
-### Reusing Lua across calls## Lua Scripting
-All functions documented in `SharedPlugins/NeoStackAI/Docs/Reference/`:The Lua runtime opens only `base`, `string`, `table`, `math`, and `coroutine` — there is **no `require`** (no `package`/`io`/`os`). Each call gets a fresh state, so nothing persists between invocations.
+### Reusing Lua across calls
+All NeoStack Lua functions are documented in `SharedPlugins/NeoStackAI/Docs/Reference/`. The Lua runtime opens only `base`, `string`, `table`, `math`, and `coroutine` — there is **no `require`** (no `package`/`io`/`os`). Each call gets a fresh state, so nothing persists between invocations.
 
 To reference shared Lua in another file, use `loadfile` (a `base` builtin). Write the shared file as a returning module and load it at the top of your script.
 - Paths are read with raw file I/O — any absolute path works and is **not** restricted to the NeoStack project/temp sandbox.
