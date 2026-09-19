@@ -2431,3 +2431,121 @@ def test_cmd_run_automation_runs_when_check_unavailable():
          patch("soft_ue_cli.__main__.call_tool", return_value=result) as mock_call:
         main_mod.cmd_run_automation(ns)
     mock_call.assert_called_once()
+
+
+# -- check-angelscript command ------------------------------------------------
+
+
+def test_cmd_check_angelscript_clean_prints_output(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, json=False)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(True, "Compiled 12 modules")):
+        main_mod.cmd_check_angelscript(ns)
+    captured = capsys.readouterr()
+    assert "Compiled 12 modules" in captured.out
+    assert "compiled cleanly" in captured.err
+
+
+def test_cmd_check_angelscript_errors_exits_1(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, json=False)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(False, "Foo.as (1:2): boom")):
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_check_angelscript(ns)
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "boom" in captured.err
+    assert "compilation errors" in captured.err
+
+
+def test_cmd_check_angelscript_json_output(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, json=True)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(False, "Foo.as (1:2): boom")):
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_check_angelscript(ns)
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert out["status"] == "errors"
+    assert "boom" in out["output"]
+
+
+def test_cmd_check_angelscript_json_output_ok(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, json=True)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(True, "  all good  ")):
+        main_mod.cmd_check_angelscript(ns)
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"success": True, "status": "ok", "output": "all good"}
+
+
+def test_cmd_check_angelscript_not_configured(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, json=False)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=None):
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_check_angelscript(ns)
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["code"] == "ANGELSCRIPT_CHECK_NOT_CONFIGURED"
+    assert out["success"] is False
+
+
+def test_cmd_check_angelscript_forwards_config_path():
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config="C:/dev/MyGame/soft-ue.config.json", json=True)
+    with patch("soft_ue_cli.__main__._check_angelscript", return_value=(True, "")) as mock_check:
+        main_mod.cmd_check_angelscript(ns)
+    mock_check.assert_called_once_with(Path("C:/dev/MyGame/soft-ue.config.json"))
+
+
+def test_check_angelscript_is_registered_in_parser():
+    parser = build_parser()
+    args = parser.parse_args(["check-angelscript", "--json"])
+    assert args.command == "check-angelscript"
+    assert args.json is True
+    assert args.func.__name__ == "cmd_check_angelscript"
+
+
+# -- build-start bridge guard -------------------------------------------------
+
+
+def test_cmd_build_start_refuses_when_bridge_running(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    health = {"running": True, "version": "1.0"}
+    ns = argparse.Namespace(config=None, timeout=300.0, poll_interval=2.0)
+    with patch("soft_ue_cli.__main__.health_check", return_value=health), \
+         patch("soft_ue_cli.__main__._run_build_command") as mock_build:
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_build_start(ns)
+    assert exc.value.code == 1
+    mock_build.assert_not_called()
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert out["code"] == "BRIDGE_ALREADY_RUNNING"
+    assert out["bridge"] == health
+    assert "shutdown-build-restart" in out["error"]
+
+
+def test_cmd_build_start_proceeds_when_bridge_down(capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "connection refused"}), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd") as mock_load, \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=1):
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_build_start(ns)
+    # The build ran (and failed) instead of the guard rejecting the run.
+    assert exc.value.code == 1
+    mock_load.assert_called_once()
+    captured = capsys.readouterr()
+    assert "BRIDGE_ALREADY_RUNNING" not in captured.out

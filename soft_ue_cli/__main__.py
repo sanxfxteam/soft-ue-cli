@@ -2827,6 +2827,49 @@ def _check_angelscript(config_path: Path | None = None) -> tuple[bool, str] | No
     return proc.returncode == 0, output
 
 
+def cmd_check_angelscript(args: argparse.Namespace) -> None:
+    """Run the configured AngelScript compilation check and report the result.
+
+    Diagnostic counterpart to the implicit pre-flight run by `status` and
+    `run-automation`: prints the checker's output and exits non-zero when
+    AngelScript failed to compile.
+    """
+    config_path = Path(args.config) if getattr(args, "config", None) else None
+    result = _check_angelscript(config_path)
+    if result is None:
+        _emit_structured_error(
+            "ANGELSCRIPT_CHECK_NOT_CONFIGURED",
+            (
+                "'check-angelscript-command' is not defined in soft-ue.config.json "
+                "(or the config file was not found). Run the command from the project "
+                "directory, or pass --config."
+            ),
+            command="check-angelscript",
+        )
+        return
+
+    ok, output = result
+    output = output.strip()
+
+    if getattr(args, "json", False):
+        _print_json({
+            "success": ok,
+            "status": "ok" if ok else "errors",
+            "output": output,
+        })
+        if not ok:
+            sys.exit(1)
+        return
+
+    if output:
+        print(output, file=sys.stdout if ok else sys.stderr)
+    if ok:
+        print("AngelScript compiled cleanly.", file=sys.stderr)
+        return
+    print("error: AngelScript has compilation errors.", file=sys.stderr)
+    sys.exit(1)
+
+
 def _processes_for_local_project(processes: list[dict]) -> list[dict]:
     """Filter UE processes to those matching the local .uproject.
 
@@ -2979,6 +3022,23 @@ def cmd_build(args: argparse.Namespace) -> None:
 
 
 def cmd_build_start(args: argparse.Namespace) -> None:
+    # 0. Refuse to start when an editor is already up. The build would race the
+    # running editor's file/Live Coding locks and the launch step would silently
+    # attach to the existing bridge instead of a fresh editor. Fail loudly with a
+    # remediation hint so the caller/agent can pick the right command.
+    health = health_check(timeout=2.0)
+    if _bridge_health_is_ready(health):
+        _emit_structured_error(
+            "BRIDGE_ALREADY_RUNNING",
+            (
+                "An editor with a running bridge is already up, so build-start would "
+                "race the live editor. Use 'shutdown-build-restart' to rebuild and "
+                "restart it, or 'shutdown' first and then re-run build-start."
+            ),
+            command="build-start",
+            bridge=health,
+        )
+
     # 1. Run build
     config_path = Path(args.config) if getattr(args, "config", None) else None
     build_cmd = _load_build_command(config_path)
@@ -3190,6 +3250,34 @@ def build_parser() -> argparse.ArgumentParser:
         "project_path", nargs="?", default=None, help="Path to UE project root (default: current directory)"
     )
     p_cs.set_defaults(func=cmd_check_setup)
+
+    # check-angelscript
+    p_check_as = sub.add_parser(
+        "check-angelscript",
+        help="Run the configured AngelScript compilation check and print any errors.",
+        description=(
+            "Runs the 'check-angelscript-command' from soft-ue.config.json and prints its\n"
+            "output. Exits 1 when AngelScript failed to compile, 0 when it compiled cleanly.\n"
+            "Useful before running tests or after editing .as files, without the full\n"
+            "'status' handshake.\n\n"
+            "EXAMPLES:\n"
+            "  soft-ue-cli check-angelscript\n"
+            "  soft-ue-cli check-angelscript --config C:/dev/MyGame/soft-ue.config.json\n"
+            "  soft-ue-cli check-angelscript --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_check_as.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to soft-ue.config.json (auto-detected if omitted)",
+    )
+    p_check_as.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON results",
+    )
+    p_check_as.set_defaults(func=cmd_check_angelscript)
 
     # status
     p_status = sub.add_parser(

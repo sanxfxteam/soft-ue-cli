@@ -14,6 +14,7 @@ EXCLUDED_COMMANDS: frozenset[str] = frozenset({
 CLIENT_SIDE_COMMANDS: frozenset[str] = frozenset({
     "status",
     "check-setup",
+    "check-angelscript",
     "setup",
     "submit-testimonial",
     "request-feature",

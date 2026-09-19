@@ -130,6 +130,7 @@ def test_customizable_object_convenience_commands_run_client_side_for_mcp():
         "build",
         "build-start",
         "shutdown-build-restart",
+        "check-angelscript",
     }:
         assert command in CLIENT_SIDE_COMMANDS
 

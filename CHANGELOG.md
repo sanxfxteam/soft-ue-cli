@@ -2,6 +2,15 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.36.0] - 2026-09-19
+
+### Added
+- New `check-angelscript` command: runs the `check-angelscript-command` from `soft-ue.config.json` and prints its output, exiting 1 when AngelScript has compilation errors and 0 when it compiled cleanly (`--json` for a structured `{"success", "status", "output"}` payload). Rejects with `ANGELSCRIPT_CHECK_NOT_CONFIGURED` when the config key or the config file is missing. Registered as a client-side tool for the MCP server.
+
+### Changed
+- `build-start` now refuses to run when a bridge is already up. It fails with `BRIDGE_ALREADY_RUNNING` (exit 1, JSON with the current bridge health) instead of racing the live editor's file locks and relaunching into the existing session. The message points at `shutdown-build-restart` and `shutdown`. `shutdown-build-restart` is unaffected because it shuts the editor down before building.
+- `SKILL.md` documents `check-angelscript` and the `build-start` pre-flight guard.
+
 ## [1.35.0] - 2026-08-03
 
 ### Added

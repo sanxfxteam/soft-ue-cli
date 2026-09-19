@@ -10,10 +10,11 @@ description: How to use the soft-ue-cli command-line interface to inspect, edit,
 ## Diagnostics
 Verify the plugin installation and connection using these commands:
 - `soft-ue-cli status` -- queries the running bridge server for health statistics. When the editor is running, it also runs `check-angelscript-command` and prints any AngelScript compilation errors after the bridge status. When the bridge is not up yet, it inspects the editor process state (`check-ue-process-command` in `soft-ue.config.json`) and reports one of: `not_running` (editor not started), `angelscript_errors` (editor loading but AngelScript failed to compile — errors are printed), or `loading` (editor still starting; waits up to 20s for the bridge before giving up).
+- `soft-ue-cli check-angelscript` -- runs `check-angelscript-command` from `soft-ue.config.json` and prints its output. Exits 1 when AngelScript has compilation errors, 0 when it compiled cleanly (`--json` for a `{"success", "status", "output"}` payload). Use it after editing `.as` files to check compilation without the bridge handshake; it fails with `ANGELSCRIPT_CHECK_NOT_CONFIGURED` when the config key (or the config file) is missing.
 
 ## Build & Relaunch Workflow
 When making C++ changes or editing Angelscript scripts, use these commands to compile and restart the editor:
-- `soft-ue-cli build-start` -- runs the build command, launches the editor, and tail-follows the log file in real-time, printing any Angelscript compilation errors (`LogAngelscript: Error:`) until the bridge becomes ready.
+- `soft-ue-cli build-start` -- runs the build command, launches the editor, and tail-follows the log file in real-time, printing any Angelscript compilation errors (`LogAngelscript: Error:`) until the bridge becomes ready. It **refuses to run when a bridge is already up** (`BRIDGE_ALREADY_RUNNING`, exit 1) because the build would race the live editor's file locks; use `shutdown-build-restart` or `shutdown` first.
 - `soft-ue-cli shutdown-build-restart` -- requests editor shutdown via the bridge, waits until the editor process has fully exited (polling `check-ue-process-command`, force-killing after `--wait-timeout`), runs the build command, and launches the editor while monitoring for errors.
 - `soft-ue-cli shutdown` -- requests editor shutdown via the bridge and waits until the editor process has fully exited. Force-kills the process tree if it doesn't exit within `--wait-timeout` seconds (default 30) and reports `"killed": true`.
 

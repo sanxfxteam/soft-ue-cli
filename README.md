@@ -163,6 +163,7 @@ These commands are fully permitted to run in both the CLI client and the Unreal 
 |---|---|---|
 | **Setup & Diagnostics** | `status` | Health check -- returns server status |
 | | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
+| | `check-angelscript` | Run the configured AngelScript compilation check and print any errors |
 | | `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
 | **Asset & Visual Capture** | `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
 | | `capture-viewport` | Capture the current viewport |
@@ -185,6 +186,7 @@ These commands are fully permitted to run in whitelisted mode (both in the CLI c
 | Command | Description |
 |---------|-------------|
 | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
+| `check-angelscript` | Run the configured AngelScript compilation check and print any errors |
 | `status` | Health check -- returns server status |
 | `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
 
