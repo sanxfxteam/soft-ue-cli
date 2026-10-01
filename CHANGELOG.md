@@ -2,6 +2,13 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.37.0] - 2026-09-30
+
+### Changed
+- `build-start` and `shutdown-build-restart` no longer wait out `--timeout` (300s) when the initial Angelscript compile fails. Once errors stop arriving for 10s and `check-angelscript-command` confirms the failure, they exit 2 with status `angelscript_errors`, `editor: "blocked_in_compile_modal"`, and the errors in the JSON (`angelscript_errors`, first 20, merged as `file (row:col): message`, plus `angelscript_error_count`). The editor is left running: fixing the scripts lets the compile-error dialog hot-reload and startup continue. If the check reports a clean compile (already fixed), they keep waiting.
+- The same commands exit 1 with status `editor_exited` (and a `log_tail`) when `check-ue-process-command` shows the editor process died, or never appeared within 60s, before the bridge was ready.
+- A bridge timeout now prints a JSON result (`status: "timeout"`, with any Angelscript errors) instead of only a stderr line, so the final JSON carries the diagnosis even when output is piped through `tail`.
+
 ## [1.36.0] - 2026-09-19
 
 ### Added

@@ -2549,3 +2549,119 @@ def test_cmd_build_start_proceeds_when_bridge_down(capsys):
     mock_load.assert_called_once()
     captured = capsys.readouterr()
     assert "BRIDGE_ALREADY_RUNNING" not in captured.out
+
+
+# -- build-start wait loop ----------------------------------------------------
+
+_AS_ERROR_LOG = (
+    "[2026.09.30-23.22.15:066][  0]Angelscript: Error: C:/Proj/Script/Camera.as:\n"
+    "[2026.09.30-23.22.15:066][  0]Angelscript: Error:  (583:159): Expected ',' or ';'\n"
+    "[2026.09.30-23.22.15:066][  0]Angelscript: Error:  (583:159): Instead found '<string constant>'\n"
+    "[2026.09.30-23.22.15:068][  0]Angelscript: Error: C:/Proj/Script/Hud.as:\n"
+    "[2026.09.30-23.22.15:068][  0]Angelscript: Error:  (58:34): No matching signatures\n"
+)
+
+
+def test_angelscript_error_collector_merges_file_and_position_lines():
+    from soft_ue_cli.__main__ import _AngelscriptErrorCollector
+
+    collector = _AngelscriptErrorCollector()
+    for line in (_AS_ERROR_LOG + _AS_ERROR_LOG).splitlines():
+        assert collector.feed(line) is True
+    assert collector.feed("LogTemp: Display: unrelated") is False
+    assert collector.errors == [
+        "C:/Proj/Script/Camera.as (583:159): Expected ',' or ';'",
+        "C:/Proj/Script/Camera.as (583:159): Instead found '<string constant>'",
+        "C:/Proj/Script/Hud.as (58:34): No matching signatures",
+    ]
+    assert collector.summary()["angelscript_error_count"] == 3
+
+
+def _run_build_start_wait(tmp_path, monkeypatch, *, log_text="", health=None,
+                          check_as=None, processes=None, timeout=5.0):
+    """Run cmd_build_start past the build/launch steps with the wait loop sped up."""
+    from soft_ue_cli import __main__ as main_mod
+
+    (tmp_path / "Game.uproject").write_text("{}")
+    log_path = tmp_path / "Saved" / "Logs" / "Game.log"
+    log_path.parent.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main_mod, "_AS_ERROR_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(main_mod, "_PROCESS_CHECK_INTERVAL_SECONDS", 0.0)
+
+    ns = argparse.Namespace(config=None, timeout=timeout, poll_interval=0.01)
+    health = health or (lambda **_: {"error": "connection refused"})
+    with patch("soft_ue_cli.__main__.health_check", side_effect=health), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd"), \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=0), \
+         patch("soft_ue_cli.__main__._launch_editor_for_wait",
+               side_effect=lambda *a, **k: log_path.write_text(log_text, encoding="utf-8")), \
+         patch("soft_ue_cli.__main__._check_angelscript", side_effect=check_as or (lambda *_: None)), \
+         patch("soft_ue_cli.__main__._check_ue_processes", side_effect=processes or (lambda *_: None)):
+        main_mod.cmd_build_start(ns)
+
+
+def test_cmd_build_start_reports_angelscript_errors_without_waiting_for_timeout(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run_build_start_wait(
+            tmp_path, monkeypatch,
+            log_text=_AS_ERROR_LOG,
+            check_as=lambda *_: (False, "FAILED"),
+            timeout=300.0,
+        )
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["status"] == "angelscript_errors"
+    assert out["editor"] == "blocked_in_compile_modal"
+    assert out["angelscript_error_count"] == 3
+    assert out["angelscript_errors"][0] == "C:/Proj/Script/Camera.as (583:159): Expected ',' or ';'"
+    assert "soft-ue-cli status" in out["next"]
+    assert "[AS Error]" in captured.err
+
+
+def test_cmd_build_start_keeps_waiting_when_errors_already_fixed(tmp_path, monkeypatch, capsys):
+    checked = []
+
+    def health(**_):
+        # The initial guard probe sees no bridge; it comes up after the AS re-check.
+        return {"running": True} if checked else {"error": "connection refused"}
+
+    def check_as(*_):
+        checked.append(True)
+        return True, "AngelScript checked successfully"
+
+    _run_build_start_wait(tmp_path, monkeypatch, log_text=_AS_ERROR_LOG, health=health, check_as=check_as)
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["status"] == "ready"
+    assert "angelscript_errors" not in out
+
+
+def test_cmd_build_start_reports_editor_exit(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def processes(*_):
+        calls.append(True)
+        return [{"pid": 42}] if len(calls) == 1 else []
+
+    with pytest.raises(SystemExit) as exc:
+        _run_build_start_wait(
+            tmp_path, monkeypatch,
+            log_text="LogInit: Display: starting\nLogWindows: Error: Fatal error!\n",
+            processes=processes,
+            timeout=300.0,
+        )
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "editor_exited"
+    assert "Fatal error!" in out["log_tail"]
+
+
+def test_cmd_build_start_timeout_emits_json(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run_build_start_wait(tmp_path, monkeypatch, timeout=0.05)
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert out["status"] == "timeout"

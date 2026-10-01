@@ -3021,6 +3021,60 @@ def cmd_build(args: argparse.Namespace) -> None:
         sys.exit(returncode)
 
 
+_AS_ERROR_MARKER = "Angelscript: Error:"
+_AS_ERROR_GRACE_SECONDS = 10.0
+_AS_ERROR_REPORT_LIMIT = 20
+_EXIT_ANGELSCRIPT_ERRORS = 2
+_PROCESS_CHECK_INTERVAL_SECONDS = 10.0
+_EDITOR_START_GRACE_SECONDS = 60.0
+
+
+class _AngelscriptErrorCollector:
+    """Collects Angelscript errors from editor log lines.
+
+    The log splits an error over a file line ("C:/.../X.as:") and one or more
+    "(row:col): message" lines; they are merged into "C:/.../X.as (row:col): message".
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.last_error_at: float | None = None
+        self._current_file: str | None = None
+
+    def feed(self, line: str) -> bool:
+        """Record the line if it is an Angelscript error; return whether it was one."""
+        _, marker, text = line.partition(_AS_ERROR_MARKER)
+        if not marker:
+            return False
+        self.last_error_at = time.monotonic()
+        text = text.strip()
+        if text.endswith(":") and not text.startswith("("):
+            self._current_file = text[:-1]
+            return True
+        if text.startswith("(") and self._current_file:
+            text = f"{self._current_file} {text}"
+        if text and text not in self.errors:
+            self.errors.append(text)
+        return True
+
+    def settled(self, grace: float) -> bool:
+        """True once errors were seen and none arrived for `grace` seconds."""
+        return self.last_error_at is not None and time.monotonic() - self.last_error_at >= grace
+
+    def clear(self) -> None:
+        self.errors.clear()
+        self.last_error_at = None
+        self._current_file = None
+
+    def summary(self) -> dict:
+        if not self.errors:
+            return {}
+        return {
+            "angelscript_errors": self.errors[:_AS_ERROR_REPORT_LIMIT],
+            "angelscript_error_count": len(self.errors),
+        }
+
+
 def cmd_build_start(args: argparse.Namespace) -> None:
     # 0. Refuse to start when an editor is already up. The build would race the
     # running editor's file/Live Coding locks and the launch step would silently
@@ -3088,19 +3142,39 @@ def cmd_build_start(args: argparse.Namespace) -> None:
     start_time = time.monotonic()
     last_heartbeat_elapsed = 0.0
     heartbeat_interval = 30.0
+    as_errors = _AngelscriptErrorCollector()
+    last_process_check = start_time
+    editor_seen = False
+
+    def drain_log() -> None:
+        if not log_file:
+            return
+        while True:
+            line = log_file.readline()
+            if not line:
+                break
+            line = line.rstrip("\r\n")
+            if as_errors.feed(line):
+                print(f"[AS Error] {line}", file=sys.stderr)
+
+    def fail(status: str, message: str, exit_code: int, **extra: object) -> None:
+        drain_log()
+        print(f"error: {message}", file=sys.stderr)
+        payload: dict = {
+            "success": False,
+            "status": status,
+            "message": message,
+            "elapsed_seconds": round(time.monotonic() - start_time, 1),
+        }
+        payload.update(as_errors.summary())
+        payload.update(extra)
+        _print_json(payload)
+        sys.exit(exit_code)
 
     print("Watching logs for Angelscript errors...", file=sys.stderr)
     try:
         while True:
-            # Read any new lines in the log file
-            if log_file:
-                while True:
-                    line = log_file.readline()
-                    if not line:
-                        break
-                    line = line.rstrip("\r\n")
-                    if "LogAngelscript: Error:" in line or "Angelscript: Error:" in line:
-                        print(f"[AS Error] {line}", file=sys.stderr)
+            drain_log()
 
             # Check if the bridge is ready
             elapsed = time.monotonic() - start_time
@@ -3110,16 +3184,7 @@ def cmd_build_start(args: argparse.Namespace) -> None:
             probe_timeout = max(0.2, min(5.0, poll_interval, max(timeout - elapsed, 0.2)))
             health = health_check(timeout=probe_timeout)
             if _bridge_health_is_ready(health):
-                # Print any remaining lines
-                if log_file:
-                    while True:
-                        line = log_file.readline()
-                        if not line:
-                            break
-                        line = line.rstrip("\r\n")
-                        if "LogAngelscript: Error:" in line or "Angelscript: Error:" in line:
-                            print(f"[AS Error] {line}", file=sys.stderr)
-                
+                drain_log()
                 print("Editor started successfully and bridge is ready.", file=sys.stderr)
                 _print_json({
                     "success": True,
@@ -3128,9 +3193,45 @@ def cmd_build_start(args: argparse.Namespace) -> None:
                 })
                 break
 
+            # A failed initial compile blocks startup in the Angelscript modal, which
+            # hot-reloads until the scripts compile. Report instead of waiting it out.
+            if as_errors.settled(_AS_ERROR_GRACE_SECONDS):
+                as_result = _check_angelscript(config_path)
+                if as_result is not None and as_result[0]:
+                    as_errors.clear()  # Already fixed and hot-reloaded; keep waiting.
+                else:
+                    fail(
+                        "angelscript_errors",
+                        "AngelScript failed to compile; the editor is waiting in the "
+                        "Angelscript compile-error dialog.",
+                        _EXIT_ANGELSCRIPT_ERRORS,
+                        editor="blocked_in_compile_modal",
+                        next=(
+                            "Fix the listed .as files. The editor hot-reloads them and "
+                            "continues starting; then run 'soft-ue-cli status'."
+                        ),
+                    )
+
+            # Stop waiting when the editor crashed or never started.
+            now = time.monotonic()
+            if now - last_process_check >= _PROCESS_CHECK_INTERVAL_SECONDS:
+                last_process_check = now
+                processes = _check_ue_processes(config_path)
+                if processes is not None:
+                    if processes:
+                        editor_seen = True
+                    elif editor_seen or elapsed >= _EDITOR_START_GRACE_SECONDS:
+                        fail(
+                            "editor_exited",
+                            "The editor process exited before the bridge became ready."
+                            if editor_seen
+                            else "No editor process found after launch.",
+                            1,
+                            log_tail=_read_text_tail(log_path, max_chars=2000),
+                        )
+
             if elapsed >= timeout:
-                print(f"error: bridge did not become ready within {timeout:g}s", file=sys.stderr)
-                sys.exit(1)
+                fail("timeout", f"bridge did not become ready within {timeout:g}s", 1)
 
             time.sleep(min(poll_interval, max(timeout - elapsed, 0.0)))
     finally:
@@ -5697,7 +5798,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_build_start = sub.add_parser(
         "build-start",
         help="Run the build, then start the editor and print all Angelscript errors.",
-        description="Runs the build, launches the editor, and tail-follows the log file to print Angelscript errors until the bridge is ready.",
+        description=(
+            "Runs the build, launches the editor, and tail-follows the log file to print Angelscript errors until the bridge is ready.\n"
+            "Exits 2 with status 'angelscript_errors' (errors listed in the JSON) when the initial Angelscript compile fails and\n"
+            "the editor waits in the compile-error dialog; fix the scripts and the editor continues starting on its own.\n"
+            "Exits 1 with status 'editor_exited' when the editor process dies before the bridge is ready."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_build_start.add_argument(
         "--config",
@@ -5724,7 +5831,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_sbr = sub.add_parser(
         "shutdown-build-restart",
         help="Shut down the running editor, rebuild, and restart it.",
-        description="Requests editor shutdown via the bridge, runs the build command, restarts the editor, and monitors logs for Angelscript errors.",
+        description=(
+            "Requests editor shutdown via the bridge, runs the build command, restarts the editor, and monitors logs for Angelscript errors.\n"
+            "Same exit statuses as build-start: 2 = 'angelscript_errors' (editor waiting in the compile-error dialog), 1 = failure."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_sbr.add_argument(
         "--config",
