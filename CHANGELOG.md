@@ -2,6 +2,11 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.37.1] - 2026-10-02
+
+### Fixed
+- `shutdown`, `shutdown-build-restart` and `status` now match editor processes by the full `.uproject` path when `check-ue-process-command` reports one. Before, they matched the project name and fell back to every editor, so shutting down an editor in a git worktree also force-killed the main checkout's editor of the same project.
+
 ## [1.37.0] - 2026-09-30
 
 ### Changed

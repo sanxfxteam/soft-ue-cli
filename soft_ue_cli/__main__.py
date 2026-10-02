@@ -2871,26 +2871,31 @@ def cmd_check_angelscript(args: argparse.Namespace) -> None:
 
 
 def _processes_for_local_project(processes: list[dict]) -> list[dict]:
-    """Filter UE processes to those matching the local .uproject.
+    """Filter UE processes to those running the local .uproject.
 
-    Falls back to the full list when the local project can't be determined or
-    none of the processes match, keeping callers safe from false negatives.
+    When the process check reports project paths, only an exact path match counts,
+    so editors of other checkouts (git worktrees) of the same project are never
+    waited on or killed. Without paths, falls back to the project name, then to the
+    full list when the local project can't be determined or nothing matches.
     """
     try:
         root = _find_project_root_local()
         uprojects = list(root.glob("*.uproject"))
         if not uprojects:
             return processes
-        name = uprojects[0].stem.lower()
+        local = uprojects[0].resolve()
     except Exception:
         return processes
 
-    matched = [
-        p
-        for p in processes
-        if name in str(p.get("projectName", "")).lower()
-        or name in str(p.get("projectPath", "")).lower()
-    ]
+    def norm(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    with_path = [p for p in processes if p.get("projectPath")]
+    if with_path:
+        return [p for p in with_path if norm(str(p["projectPath"])) == norm(str(local))]
+
+    name = local.stem.lower()
+    matched = [p for p in processes if name in str(p.get("projectName", "")).lower()]
     return matched or processes
 
 

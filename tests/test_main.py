@@ -2384,6 +2384,43 @@ def test_cmd_status_loading_with_angelscript_errors(capsys):
     assert "expected ';'" in captured.err
 
 
+def _local_project(tmp_path, monkeypatch, name="ProjectShiva"):
+    project = tmp_path / name
+    project.mkdir()
+    (project / f"{name}.uproject").write_text("{}")
+    monkeypatch.chdir(project)
+    return project / f"{name}.uproject"
+
+
+def test_processes_for_local_project_matches_full_path_only(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    local = _local_project(tmp_path, monkeypatch)
+    mine = {"pid": 1, "projectName": "ProjectShiva", "projectPath": str(local).upper()}
+    worktree = {"pid": 2, "projectName": "ProjectShiva",
+                "projectPath": str(tmp_path / "ProjectShiva-wt" / "ProjectShiva.uproject")}
+    assert main_mod._processes_for_local_project([mine, worktree]) == [mine]
+
+
+def test_processes_for_local_project_other_checkout_only_is_empty(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    _local_project(tmp_path, monkeypatch)
+    worktree = {"pid": 2, "projectName": "ProjectShiva",
+                "projectPath": str(tmp_path / "ProjectShiva-wt" / "ProjectShiva.uproject")}
+    assert main_mod._processes_for_local_project([worktree]) == []
+
+
+def test_processes_for_local_project_without_paths_uses_name(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    _local_project(tmp_path, monkeypatch)
+    mine = {"pid": 1, "projectName": "ProjectShiva"}
+    other = {"pid": 2, "projectName": "Blank"}
+    assert main_mod._processes_for_local_project([mine, other]) == [mine]
+    assert main_mod._processes_for_local_project([other]) == [other]
+
+
 def test_cmd_status_no_process_command_falls_back_to_health(capsys):
     from soft_ue_cli import __main__ as main_mod
 
