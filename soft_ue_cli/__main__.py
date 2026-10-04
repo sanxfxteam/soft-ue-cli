@@ -267,6 +267,10 @@ def cmd_shutdown(args: argparse.Namespace) -> None:
             f"Warning: shutdown request failed (bridge may be down): {exc.message}",
             file=sys.stderr,
         )
+        processes = _check_ue_processes()
+        if processes is not None and not _processes_for_local_project(processes):
+            _print_json({"success": True, "running": False, "message": "Unreal Editor is not running."})
+            return
 
     result = _wait_for_ue_shutdown(args.wait_timeout)
     if result["exited"] and result["killed"]:

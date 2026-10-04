@@ -2,6 +2,12 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.37.2] - 2026-10-03
+
+### Fixed
+- Commands no longer drive another project's editor through a stale `.soft-ue-bridge/instance.json`. When an editor closes without removing the file and another editor (for example a git worktree's) takes the same port, the CLI used to talk to that editor. The bridge now reports `project_dir` in its health response and in `instance.json` (with its `pid`); the CLI checks it against the folder holding `.soft-ue-bridge` and fails with "belongs to another project" instead. Bridges that don't report `project_dir` are trusted as before. A recorded `pid` that is no longer running marks the file stale without asking the port, so a busy editor on that port can't be mistaken for this project's.
+- `shutdown` reports `Unreal Editor is not running.` when the shutdown request fails and no editor of this project is running, instead of `Editor shut down and process exited.`
+
 ## [1.37.1] - 2026-10-02
 
 ### Fixed
