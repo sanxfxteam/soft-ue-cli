@@ -230,3 +230,134 @@ def test_live_editor_pid_with_busy_bridge_is_trusted(tmp_path, monkeypatch, no_e
 
     monkeypatch.setattr("httpx.get", busy)
     assert get_server_url() == "http://127.0.0.1:18084"
+
+
+# -- per-project resolution (several editors at once) ------------------------------
+
+
+def _project(tmp_path, name, instance=None):
+    """A project folder with a .uproject and, optionally, a .soft-ue-bridge/instance.json."""
+    project = tmp_path / name
+    project.mkdir(parents=True)
+    (project / f"{project.name}.uproject").write_text("{}")
+    if instance is not None:
+        (project / ".soft-ue-bridge").mkdir()
+        (project / ".soft-ue-bridge" / "instance.json").write_text(json.dumps(instance))
+    return project
+
+
+def _no_http(url, timeout):
+    raise AssertionError(f"no HTTP expected, got {url}")
+
+
+def test_resolved_project_without_instance_never_falls_back_to_18080(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import EditorNotRunning
+
+    worktree = _project(tmp_path, "FPS-wt/FPS")
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr("httpx.get", _no_http)  # main's editor on 18080 must not even be asked
+    with pytest.raises(EditorNotRunning, match="not running"):
+        get_server_url()
+
+
+def test_dead_pid_means_not_running_and_keeps_the_file(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import EditorNotRunning
+
+    project = _project(tmp_path, "FPS", {"port": 18080, "pid": 4_000_000, "project_dir": str(tmp_path / "FPS")})
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("httpx.get", _no_http)
+    with pytest.raises(EditorNotRunning, match="stale"):
+        get_server_url()
+    assert (project / ".soft-ue-bridge" / "instance.json").is_file()  # ignored, not deleted
+
+
+def test_instance_written_by_another_checkout_means_not_running(tmp_path, monkeypatch, no_env):
+    import os
+
+    from soft_ue_cli.discovery import EditorNotRunning
+
+    main = tmp_path / "FPS"
+    worktree = _project(tmp_path, "FPS-wt/FPS", {"port": 18080, "pid": os.getpid(), "project_dir": str(main)})
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr("httpx.get", _no_http)
+    with pytest.raises(EditorNotRunning, match="written by the editor of"):
+        get_server_url()
+
+
+def test_live_pid_and_matching_project_is_used(tmp_path, monkeypatch, no_env):
+    import os
+
+    project = _project(tmp_path, "FPS", {"port": 18082, "pid": os.getpid(), "project_dir": str(tmp_path / "FPS") + "/"})
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("httpx.get", lambda url, timeout: _Response({"project_dir": str(project) + "/"}))
+    assert get_server_url() == "http://127.0.0.1:18082"
+
+
+def test_live_editor_of_another_project_is_refused(tmp_path, monkeypatch, no_env):
+    import os
+
+    from soft_ue_cli.discovery import WrongProjectBridge
+
+    project = _project(tmp_path, "FPS", {"port": 18080, "pid": os.getpid()})
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("httpx.get", lambda url, timeout: _Response({"project_dir": "C:/Other/Project/"}))
+    with pytest.raises(WrongProjectBridge, match="belongs to another project"):
+        get_server_url()
+
+
+def test_nearest_uproject_from_a_subfolder(tmp_path, monkeypatch, no_env):
+    project = _project(tmp_path, "FPS", {"port": 18081})
+    sub = project / "Script" / "Weapons"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    monkeypatch.setattr("httpx.get", lambda url, timeout: _Response({}))
+    assert get_server_url() == "http://127.0.0.1:18081"
+
+
+def test_config_path_selects_the_project_over_the_cwd(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import resolve_project_dir, set_config_path
+
+    here = _project(tmp_path, "A", {"port": 18080})
+    there = _project(tmp_path, "B", {"port": 18083})
+    (there / "soft-ue.config.json").write_text("{}")
+    monkeypatch.chdir(here)
+    set_config_path(there / "soft-ue.config.json")
+    assert resolve_project_dir() == there.resolve()
+    monkeypatch.setattr("httpx.get", lambda url, timeout: _Response({}))
+    assert get_server_url() == "http://127.0.0.1:18083"
+
+
+def test_explicit_port_bypasses_discovery(tmp_path, monkeypatch, no_env):
+    project = _project(tmp_path, "FPS")  # no instance.json: discovery would refuse
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("httpx.get", _no_http)
+    monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "18081")
+    assert get_server_url() == "http://127.0.0.1:18081"
+
+
+def test_no_project_at_all_keeps_the_documented_default(tmp_path, monkeypatch, no_env):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    assert get_server_url() == "http://127.0.0.1:18080"
+
+
+def test_requested_port(monkeypatch, no_env):
+    from soft_ue_cli.discovery import requested_port
+
+    assert requested_port() is None
+    monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "18085")
+    assert requested_port() == 18085
+    monkeypatch.setenv("SOFT_UE_BRIDGE_URL", "http://localhost:18086/")
+    assert requested_port() == 18086
+    monkeypatch.setenv("SOFT_UE_BRIDGE_URL", "http://10.0.0.5:18087")
+    assert requested_port() is None  # a remote bridge: nothing to hand to a local editor
+
+
+def test_pid_alive():
+    import os
+
+    from soft_ue_cli.discovery import _pid_alive
+
+    assert _pid_alive(os.getpid())
+    assert not _pid_alive(4_000_000)
+    assert not _pid_alive(0)

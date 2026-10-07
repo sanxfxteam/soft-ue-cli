@@ -640,18 +640,21 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SOFT_UE_BRIDGE_URL` | *(none)* | Full bridge URL override (e.g. `http://192.168.1.10:18080`) |
-| `SOFT_UE_BRIDGE_PORT` | `18080` | Port override when using localhost |
+| `SOFT_UE_BRIDGE_PORT` | *(none)* | Port of a localhost bridge; bypasses discovery. Read by the plugin too, as the first port it tries (default 18080), so `build-start` hands an explicitly requested port to the editor it launches |
 | `SOFT_UE_BRIDGE` | *(none)* | Set to `1` to enable conditional compilation in `Target.cs` |
 
 ### Server Discovery Order
 
-The CLI finds the bridge server using this priority:
+Several editors can run at once (different projects, git worktrees of one project), each bridge on the first free port from 18080. A command only ever talks to the editor of its own project:
 
-1. `--server` command-line flag
-2. `SOFT_UE_BRIDGE_URL` environment variable
-3. `SOFT_UE_BRIDGE_PORT` environment variable (constructs `http://127.0.0.1:<port>`)
-4. `.soft-ue-bridge/instance.json` file (searched upward from the current working directory -- written automatically by the plugin at startup)
-5. `http://127.0.0.1:18080` (default fallback)
+1. `--server` command-line flag, `SOFT_UE_BRIDGE_URL`, then `SOFT_UE_BRIDGE_PORT` (constructs `http://127.0.0.1:<port>`): used as given, without discovery.
+2. Otherwise the project is resolved: the folder of `--config` (commands that take a `soft-ue.config.json`), else the nearest folder above the current directory holding a `.uproject`, `soft-ue.config.json` or `.soft-ue-bridge/instance.json`. Only that project's `.soft-ue-bridge/instance.json` (written by the plugin at startup with its `port`, `pid` and `project_dir`) is used:
+   - its `pid` is alive and its `project_dir` is this project: the bridge on its port is used, unless that bridge reports another project, which is refused ("belongs to another project");
+   - missing, written by another checkout's editor, or its `pid` has exited (an editor killed without cleanup): this project's editor is **not running**. Commands fail with that message, `status` reports `not_running`, `build-start` builds and launches. The stale file is ignored, not deleted.
+   - There is **no fallback to 18080** once a project is resolved: that port usually belongs to another checkout's editor.
+3. `http://127.0.0.1:18080` only when no project can be resolved at all (run outside any project folder).
+
+`shutdown`, `shutdown-build-restart` and `build-start` also refuse an explicit `--server` / `SOFT_UE_BRIDGE_URL` / `SOFT_UE_BRIDGE_PORT` whose bridge reports another project (`BRIDGE_OF_ANOTHER_PROJECT`), and only wait on, or kill, editor processes whose command line opens this project's `.uproject`.
 
 ### Conditional Compilation for Teams
 
@@ -792,11 +795,11 @@ The SoftUEBridge plugin adds a lightweight HTTP server that listens on a single 
 
 ### How do I change the default port?
 
-Set the `SOFT_UE_BRIDGE_PORT` environment variable before launching UE, or use the `--server` flag when running CLI commands. The default port is 18080.
+Set the `SOFT_UE_BRIDGE_PORT` environment variable before launching UE, or use the `--server` flag when running CLI commands. The default port is 18080. It is the first port the bridge tries: when it is taken, the bridge takes the next free one and records it in `.soft-ue-bridge/instance.json`. `build-start --server http://127.0.0.1:<port>` (or with `SOFT_UE_BRIDGE_PORT`) passes the port to the editor it launches through `SOFT_UE_BRIDGE_PORT`; the `start-command` must keep the environment (a launcher that spawns through WMI `Win32_Process.Create` drops it). When the editor comes up on another port anyway, `build-start` reports it (`server`, `requested_server`, `warning`) instead of timing out.
 
 ### Can multiple UE instances run simultaneously?
 
-Yes. Each UE instance writes its port to a `.soft-ue-bridge/instance.json` file in the project directory. Use `SOFT_UE_BRIDGE_URL` or `--server` to target a specific instance when multiple are running.
+Yes. Each UE instance writes its port to a `.soft-ue-bridge/instance.json` file in its project directory, and the CLI run from a project folder (or with `--config`) reaches that project's editor only (see Server Discovery Order). Use `SOFT_UE_BRIDGE_URL` or `--server` to target a specific instance from anywhere.
 
 ### How do I edit Blueprints from the command line?
 

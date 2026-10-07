@@ -2,6 +2,21 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.38.0] - 2026-10-06
+
+### Changed
+- **Each command only talks to its own project's editor.** The project is resolved from `--config` (commands that take a `soft-ue.config.json`), else the nearest folder above the cwd with a `.uproject` (or `soft-ue.config.json` / `.soft-ue-bridge/instance.json`), and only that project's `.soft-ue-bridge/instance.json` is used. With a project resolved there is **no fallback to 18080** any more: with no `instance.json` (or a stale one) commands fail with "the editor of <project> is not running" instead of silently driving whichever editor holds 18080, usually another checkout's. 18080 remains the fallback only when no project can be resolved at all. `--server`, `SOFT_UE_BRIDGE_URL` and `SOFT_UE_BRIDGE_PORT` still bypass discovery.
+- An `instance.json` whose `pid` has exited, or that records another checkout's `project_dir`, now means "this project's editor is not running" (the file is ignored, not deleted) instead of an error. A live editor whose bridge reports another project is still refused.
+- `shutdown`, `shutdown-build-restart` and `build-start` refuse an explicit `--server` / `SOFT_UE_BRIDGE_URL` / `SOFT_UE_BRIDGE_PORT` whose bridge reports another project (`BRIDGE_OF_ANOTHER_PROJECT`, exit 1), so a requested port can no longer stop or race another checkout's editor.
+- Editor processes are matched to the resolved project's `.uproject` only: with no resolved project, or no match, `shutdown` / `shutdown-build-restart` / `status` no longer fall back to every running editor. `build-start` checks for editor exit against this project's process only.
+- `build-start` also refuses (`EDITOR_ALREADY_RUNNING`, exit 1, with `pids`) while this project's editor process runs without an answering bridge (still loading), and launches the `.uproject` of the resolved project (`--config`'s folder when given).
+- `build-start` passes an explicitly requested local port (`--server http://127.0.0.1:<port>`, `SOFT_UE_BRIDGE_URL` or `SOFT_UE_BRIDGE_PORT`) to the editor it launches as `SOFT_UE_BRIDGE_PORT`, the bridge's port setting. When the editor's bridge comes up elsewhere (the `start-command` dropped the environment, or the port was taken) it reports `ready` with `server`, `requested_server` and a `warning` instead of timing out. A successful `build-start` prints the bridge `server` it found.
+- `status` adds a `detail` with the reason (for example a stale `instance.json`) when it reports `not_running`.
+- The `mcp` extra is pinned to `mcp<2` (mcp 2.x renamed `FastMCP`, which broke `mcp-serve`).
+
+### Fixed
+- `build-start` (and `status`, `check-setup`) no longer crash on a stale `instance.json` left by an editor stopped by PID: the health check reports the editor as not running.
+
 ## [1.37.2] - 2026-10-03
 
 ### Fixed

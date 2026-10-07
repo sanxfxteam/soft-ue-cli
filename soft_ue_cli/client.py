@@ -157,9 +157,17 @@ def call_tool(tool_name: str, arguments: dict[str, Any], timeout: float | None =
     return result
 
 
-def health_check(timeout: float = 5.0) -> dict[str, Any]:
-    """GET /bridge health check."""
-    url = get_server_url()
+def health_check(timeout: float = 5.0, url: str | None = None) -> dict[str, Any]:
+    """GET /bridge health check of url (default: the discovered bridge). Never raises: a project whose
+    editor is not running (or whose instance.json points at another project's bridge) is reported as
+    {"error": ...} too."""
+    from .errors import BridgeError
+
+    if url is None:
+        try:
+            url = get_server_url()
+        except BridgeError as exc:
+            return {"error": exc.message}
     try:
         response = httpx.get(f"{url}/bridge", timeout=timeout)
         response.raise_for_status()

@@ -217,11 +217,14 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     processes = _processes_for_local_project(processes)
     if not processes:
-        _print_json({
+        payload = {
             "running": False,
             "status": "not_running",
             "message": "Unreal Editor is not running.",
-        })
+        }
+        if health.get("error"):
+            payload["detail"] = health["error"]
+        _print_json(payload)
         return
 
     # Editor process exists but the bridge isn't responding. Surface any
@@ -256,7 +259,10 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 def cmd_shutdown(args: argparse.Namespace) -> None:
     from .client import shutdown as client_shutdown
+    from .discovery import EditorNotRunning, WrongProjectBridge
     from .errors import BridgeError
+
+    _refuse_foreign_explicit_bridge("shutdown")
     try:
         client_shutdown()
         print("Editor shutdown requested successfully.", file=sys.stderr)
@@ -268,7 +274,11 @@ def cmd_shutdown(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         processes = _check_ue_processes()
-        if processes is not None and not _processes_for_local_project(processes):
+        if processes is None and isinstance(exc, WrongProjectBridge):
+            _emit_structured_error("BRIDGE_OF_ANOTHER_PROJECT", exc.message, command="shutdown")
+        if (processes is None and isinstance(exc, EditorNotRunning)) or (
+            processes is not None and not _processes_for_local_project(processes)
+        ):
             _print_json({"success": True, "running": False, "message": "Unreal Editor is not running."})
             return
 
@@ -310,6 +320,17 @@ def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
     print(f"Launching editor using start-command: {start_cmd}", file=sys.stderr)
     import subprocess
 
+    from .discovery import requested_port
+
+    # An explicitly requested port (--server, SOFT_UE_BRIDGE_URL or SOFT_UE_BRIDGE_PORT on localhost) is
+    # handed to the editor through SOFT_UE_BRIDGE_PORT, the bridge's only port setting. It is the first port
+    # the bridge tries; the start-command must pass the environment on to the editor.
+    env = os.environ.copy()
+    port = requested_port()
+    if port:
+        env["SOFT_UE_BRIDGE_PORT"] = str(port)
+        print(f"Requesting bridge port {port} (SOFT_UE_BRIDGE_PORT).", file=sys.stderr)
+
     subprocess.Popen(
         start_cmd,
         shell=True,
@@ -317,11 +338,72 @@ def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=str(config_file.parent),
+        env=env,
     )
 
 
 def _bridge_health_is_ready(health: dict) -> bool:
     return "error" not in health and bool(health)
+
+
+def _bind_config(args: argparse.Namespace) -> Path | None:
+    """Bind discovery to the --config file of commands whose --config is a soft-ue.config.json path."""
+    from .discovery import set_config_path
+
+    config = getattr(args, "config", None)
+    path = Path(config) if config else None
+    if path is not None:
+        set_config_path(path)
+    return path
+
+
+def _health_is_project(health: dict, project_dir: Path | None) -> bool:
+    """False when the bridge reports a project_dir that is not project_dir."""
+    from .discovery import _same_dir
+
+    reported = health.get("project_dir")
+    return not (project_dir is not None and isinstance(reported, str) and reported and not _same_dir(reported, project_dir))
+
+
+def _refuse_foreign_explicit_bridge(command: str) -> None:
+    """--server / SOFT_UE_BRIDGE_URL / SOFT_UE_BRIDGE_PORT bypass discovery, but the commands that stop or
+    start an editor must still only act on the resolved project's editor: refuse a bridge that reports
+    another project."""
+    from .discovery import _same_dir, bridge_project_dir, explicit_server_url, resolve_project_dir
+
+    url = explicit_server_url()
+    project = resolve_project_dir()
+    if not url or project is None:
+        return
+    reported = bridge_project_dir(url)
+    if reported and not _same_dir(reported, project):
+        _emit_structured_error(
+            "BRIDGE_OF_ANOTHER_PROJECT",
+            (
+                f"The bridge at {url} belongs to another project ({reported}), not {project}. "
+                f"'{command}' only acts on this project's editor: drop --server / SOFT_UE_BRIDGE_URL / "
+                "SOFT_UE_BRIDGE_PORT, or point them at this project's editor."
+            ),
+            command=command,
+            server=url,
+            bridge_project_dir=reported,
+            project_dir=str(project),
+        )
+
+
+def _current_server_url() -> str | None:
+    from .errors import BridgeError
+
+    try:
+        return get_server_url()
+    except BridgeError:
+        return None
+
+
+def _local_editor_processes(config_path: Path | None = None) -> list[dict]:
+    """Editor processes running the resolved project's .uproject ([] when the check is not configured)."""
+    processes = _check_ue_processes(config_path)
+    return _processes_for_local_project(processes) if processes else []
 
 
 def cmd_spawn_actor(args: argparse.Namespace) -> None:
@@ -2129,7 +2211,7 @@ def cmd_check_setup(args: argparse.Namespace) -> None:
     # 3. Bridge server
     info = health_check()
     if "error" in info:
-        url = get_server_url()
+        url = _current_server_url() or "this project's editor"
         print(f"{fail} Bridge server unreachable at {url}: {info['error']}")
         issues.append("bridge server unreachable")
     else:
@@ -2749,6 +2831,10 @@ def cmd_run_automation(args: argparse.Namespace) -> None:
 
 
 def _find_config_file(start_path: Path | None = None) -> Path | None:
+    from .discovery import config_path as bound_config_path
+
+    if start_path is None and (bound := bound_config_path()) is not None:
+        return bound
     current = (start_path or Path.cwd()).resolve()
     if current.is_file():
         current = current.parent
@@ -2875,21 +2961,22 @@ def cmd_check_angelscript(args: argparse.Namespace) -> None:
 
 
 def _processes_for_local_project(processes: list[dict]) -> list[dict]:
-    """Filter UE processes to those running the local .uproject.
+    """Filter UE processes to those running the resolved project's .uproject.
 
     When the process check reports project paths, only an exact path match counts,
     so editors of other checkouts (git worktrees) of the same project are never
-    waited on or killed. Without paths, falls back to the project name, then to the
-    full list when the local project can't be determined or nothing matches.
+    waited on or killed. Without paths, falls back to the project name. Never falls
+    back to other editors: no resolved project, or no match, gives [].
     """
+    from .discovery import find_uproject, resolve_project_dir
+
     try:
-        root = _find_project_root_local()
-        uprojects = list(root.glob("*.uproject"))
-        if not uprojects:
-            return processes
-        local = uprojects[0].resolve()
+        uproject = find_uproject(resolve_project_dir())
+        if uproject is None:
+            return []
+        local = uproject.resolve()
     except Exception:
-        return processes
+        return []
 
     def norm(path: str) -> str:
         return os.path.normcase(os.path.normpath(path))
@@ -2899,8 +2986,7 @@ def _processes_for_local_project(processes: list[dict]) -> list[dict]:
         return [p for p in with_path if norm(str(p["projectPath"])) == norm(str(local))]
 
     name = local.stem.lower()
-    matched = [p for p in processes if name in str(p.get("projectName", "")).lower()]
-    return matched or processes
+    return [p for p in processes if name in str(p.get("projectName", "")).lower()]
 
 
 def _kill_ue_process(pid: int, config_path: Path | None = None) -> bool:
@@ -2986,11 +3072,9 @@ def _load_build_command(config_path: Path | None = None) -> str:
 
 
 def _find_project_root_local() -> Path:
-    current = Path.cwd().resolve()
-    for directory in [current, *current.parents]:
-        if any(directory.glob("*.uproject")):
-            return directory
-    return current
+    from .discovery import resolve_project_dir
+
+    return resolve_project_dir() or Path.cwd().resolve()
 
 
 def _run_build_command(build_cmd: str, *, heartbeat_interval: float = 30.0) -> int:
@@ -3089,34 +3173,54 @@ def cmd_build_start(args: argparse.Namespace) -> None:
     # running editor's file/Live Coding locks and the launch step would silently
     # attach to the existing bridge instead of a fresh editor. Fail loudly with a
     # remediation hint so the caller/agent can pick the right command.
+    # Only this project's editor counts: the bridge is found through the project's
+    # own instance.json (or an explicit --server / SOFT_UE_BRIDGE_PORT that must not
+    # belong to another project), never through another checkout's port.
+    from .discovery import EditorNotRunning, explicit_server_url, find_uproject, project_bridge_url, resolve_project_dir
+    from .errors import BridgeError
+
+    config_path = _bind_config(args)
+    _refuse_foreign_explicit_bridge("build-start")
     health = health_check(timeout=2.0)
     if _bridge_health_is_ready(health):
         _emit_structured_error(
             "BRIDGE_ALREADY_RUNNING",
             (
-                "An editor with a running bridge is already up, so build-start would "
+                "This project's editor is already up with a running bridge, so build-start would "
                 "race the live editor. Use 'shutdown-build-restart' to rebuild and "
                 "restart it, or 'shutdown' first and then re-run build-start."
             ),
             command="build-start",
             bridge=health,
         )
+    running = _local_editor_processes(config_path)
+    if running:
+        _emit_structured_error(
+            "EDITOR_ALREADY_RUNNING",
+            (
+                "This project's editor process is already running (its bridge is not answering yet), so "
+                "build-start would race it. Wait for it ('soft-ue-cli status'), or use "
+                "'shutdown-build-restart' / 'shutdown'."
+            ),
+            command="build-start",
+            pids=[p.get("pid") for p in running],
+        )
 
     # 1. Run build
-    config_path = Path(args.config) if getattr(args, "config", None) else None
     build_cmd = _load_build_command(config_path)
     returncode = _run_build_command(build_cmd)
     if returncode != 0:
         print(f"error: build command failed with exit code {returncode}", file=sys.stderr)
         sys.exit(returncode)
 
-    # 2. Find .uproject
-    project_root = _find_project_root_local()
-    uproject_files = list(project_root.glob("*.uproject"))
-    if not uproject_files:
-        print("error: no .uproject file found in project directory", file=sys.stderr)
+    # 2. Find .uproject (the resolved project's: --config's folder, else the nearest above the cwd)
+    project_dir = resolve_project_dir()
+    uproject_path = find_uproject(project_dir)
+    if uproject_path is None:
+        print(f"error: no .uproject file found in project directory {project_dir or Path.cwd()}", file=sys.stderr)
         sys.exit(1)
-    uproject_path = uproject_files[0]
+    project_dir = uproject_path.parent
+    explicit_url = explicit_server_url()
 
     # 3. Clean up existing log file
     log_path = uproject_path.parent / "Saved" / "Logs" / f"{uproject_path.stem}.log"
@@ -3192,15 +3296,47 @@ def cmd_build_start(args: argparse.Namespace) -> None:
                 last_heartbeat_elapsed = elapsed
             probe_timeout = max(0.2, min(5.0, poll_interval, max(timeout - elapsed, 0.2)))
             health = health_check(timeout=probe_timeout)
-            if _bridge_health_is_ready(health):
+            if _bridge_health_is_ready(health) and _health_is_project(health, project_dir):
                 drain_log()
                 print("Editor started successfully and bridge is ready.", file=sys.stderr)
-                _print_json({
+                ready: dict = {
                     "success": True,
                     "status": "ready",
                     "elapsed_seconds": round(time.monotonic() - start_time, 1)
-                })
+                }
+                server = explicit_url or _current_server_url()
+                if server:
+                    ready["server"] = server
+                _print_json(ready)
                 break
+
+            # A requested port is only the first one the bridge tries, and only if the
+            # start-command passes SOFT_UE_BRIDGE_PORT on to the editor. When this
+            # project's editor came up elsewhere, report where instead of timing out.
+            if explicit_url:
+                try:
+                    own_url = project_bridge_url(project_dir)
+                except BridgeError:
+                    own_url = None
+                if own_url and own_url != explicit_url:
+                    own_health = health_check(timeout=probe_timeout, url=own_url)
+                    if _bridge_health_is_ready(own_health) and _health_is_project(own_health, project_dir):
+                        drain_log()
+                        warning = (
+                            f"The editor's bridge is on {own_url}, not the requested {explicit_url}: the "
+                            "start-command did not pass SOFT_UE_BRIDGE_PORT to the editor, or the port was "
+                            f"taken. Use --server {own_url} (or no --server) for this editor."
+                        )
+                        print(f"Warning: {warning}", file=sys.stderr)
+                        _print_json({
+                            "success": True,
+                            "status": "ready",
+                            "server": own_url,
+                            "requested_server": explicit_url,
+                            "warning": warning,
+                            "elapsed_seconds": round(time.monotonic() - start_time, 1),
+                        })
+                        break
 
             # A failed initial compile blocks startup in the Angelscript modal, which
             # hot-reloads until the scripts compile. Report instead of waiting it out.
@@ -3227,6 +3363,7 @@ def cmd_build_start(args: argparse.Namespace) -> None:
                 last_process_check = now
                 processes = _check_ue_processes(config_path)
                 if processes is not None:
+                    processes = _processes_for_local_project(processes)
                     if processes:
                         editor_seen = True
                     elif editor_seen or elapsed >= _EDITOR_START_GRACE_SECONDS:
@@ -3249,9 +3386,12 @@ def cmd_build_start(args: argparse.Namespace) -> None:
 
 
 def cmd_shutdown_build_restart(args: argparse.Namespace) -> None:
-    print("Requesting editor shutdown...", file=sys.stderr)
     from .client import shutdown as client_shutdown
     from .errors import BridgeError
+
+    config_path = _bind_config(args)
+    _refuse_foreign_explicit_bridge("shutdown-build-restart")
+    print("Requesting editor shutdown...", file=sys.stderr)
     try:
         client_shutdown()
         print("Editor shutdown requested successfully. Waiting for it to close...", file=sys.stderr)
@@ -3260,7 +3400,7 @@ def cmd_shutdown_build_restart(args: argparse.Namespace) -> None:
 
     # Ensure the editor process is fully gone before rebuilding so we don't race
     # file locks (Live Coding lock, bound port, etc.).
-    _wait_for_ue_shutdown(args.wait_timeout)
+    _wait_for_ue_shutdown(args.wait_timeout, config_path)
 
     cmd_build_start(args)
 
@@ -3287,9 +3427,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help=(
             "Override the bridge server URL (e.g. http://127.0.0.1:9000). "
-            "By default the URL is auto-discovered from the SOFT_UE_BRIDGE_URL env var, "
-            "then SOFT_UE_BRIDGE_PORT, then .soft-ue-bridge/instance.json searched upward from cwd "
-            "(written by the plugin at startup), then http://127.0.0.1:18080."
+            "By default the URL comes from the SOFT_UE_BRIDGE_URL env var, then SOFT_UE_BRIDGE_PORT, "
+            "then the project's own .soft-ue-bridge/instance.json (project: --config's folder, else the "
+            "nearest folder above cwd with a .uproject; a missing or stale file means its editor is not "
+            "running). http://127.0.0.1:18080 only when no project is found."
         ),
     )
     parser.add_argument(

@@ -2418,7 +2418,8 @@ def test_processes_for_local_project_without_paths_uses_name(tmp_path, monkeypat
     mine = {"pid": 1, "projectName": "ProjectShiva"}
     other = {"pid": 2, "projectName": "Blank"}
     assert main_mod._processes_for_local_project([mine, other]) == [mine]
-    assert main_mod._processes_for_local_project([other]) == [other]
+    # Never falls back to other editors when nothing matches.
+    assert main_mod._processes_for_local_project([other]) == []
 
 
 def test_cmd_status_no_process_command_falls_back_to_health(capsys):
@@ -2634,7 +2635,7 @@ def _run_build_start_wait(tmp_path, monkeypatch, *, log_text="", health=None,
          patch("soft_ue_cli.__main__._launch_editor_for_wait",
                side_effect=lambda *a, **k: log_path.write_text(log_text, encoding="utf-8")), \
          patch("soft_ue_cli.__main__._check_angelscript", side_effect=check_as or (lambda *_: None)), \
-         patch("soft_ue_cli.__main__._check_ue_processes", side_effect=processes or (lambda *_: None)):
+         patch("soft_ue_cli.__main__._check_ue_processes", side_effect=processes or (lambda *_: None)),          patch("soft_ue_cli.__main__._local_editor_processes", return_value=[]),          patch("soft_ue_cli.__main__._processes_for_local_project", side_effect=lambda p: p):
         main_mod.cmd_build_start(ns)
 
 
@@ -2702,3 +2703,305 @@ def test_cmd_build_start_timeout_emits_json(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
     assert out["status"] == "timeout"
+
+
+# -- several editors at once: each command only reaches its project's editor ----
+
+
+def _checkout(tmp_path, monkeypatch, rel, instance=None, cd=True):
+    """A project folder (<rel>/FPS.uproject), optionally with an instance.json; cd into it."""
+    project = tmp_path / rel
+    project.mkdir(parents=True)
+    (project / "FPS.uproject").write_text("{}")
+    if instance is not None:
+        (project / ".soft-ue-bridge").mkdir()
+        (project / ".soft-ue-bridge" / "instance.json").write_text(json.dumps(instance))
+    if cd:
+        monkeypatch.chdir(project)
+    monkeypatch.delenv("SOFT_UE_BRIDGE_URL", raising=False)
+    monkeypatch.delenv("SOFT_UE_BRIDGE_PORT", raising=False)
+    return project
+
+
+class _Health:
+    def __init__(self, data):
+        self._data = data
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._data
+
+
+def _main_editor_on_18080(main_dir, seen):
+    """httpx.get stand-in: another checkout's editor (main_dir) answers on 18080, nothing else listens."""
+    import httpx
+
+    def get(url, timeout=None, **_):
+        seen.append(url)
+        if ":18080/" in url:
+            return _Health({"running": True, "project_dir": str(main_dir) + "/"})
+        raise httpx.ConnectError("refused")
+
+    return get
+
+
+def test_build_start_survives_a_stale_instance_json(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    # Editor stopped by PID: instance.json left behind with a dead pid (TOOL-105).
+    _checkout(tmp_path, monkeypatch, "FPS", {"port": 18080, "pid": 4_000_000})
+    seen = []
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "Other", seen))
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd") as load, \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=1):
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_build_start(ns)
+    assert exc.value.code == 1  # the (mocked) build failed: build-start got past the guard, no crash
+    load.assert_called_once()
+    assert seen == []  # a dead pid needs no HTTP, and 18080 (another editor) is never asked
+    assert "BRIDGE_ALREADY_RUNNING" not in capsys.readouterr().out
+
+
+def test_build_start_in_a_worktree_ignores_mains_editor_on_18080(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")  # no instance.json: this editor is not running
+    seen = []
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "FPS", seen))
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd") as load, \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=1):
+        with pytest.raises(SystemExit):
+            main_mod.cmd_build_start(ns)
+    load.assert_called_once()
+    assert seen == []
+    out = capsys.readouterr().out
+    assert "BRIDGE_ALREADY_RUNNING" not in out and "shutdown-build-restart" not in out
+
+
+def test_build_start_refuses_an_explicit_port_held_by_another_project(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "18080")
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "FPS", []))
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__._run_build_command") as build:
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_build_start(ns)
+    assert exc.value.code == 1
+    build.assert_not_called()
+    out = json.loads(capsys.readouterr().out)
+    assert out["code"] == "BRIDGE_OF_ANOTHER_PROJECT"
+    assert out["server"] == "http://127.0.0.1:18080"
+
+
+def test_build_start_refuses_when_this_projects_editor_process_runs(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS")
+    mine = {"pid": 7, "projectPath": str(project / "FPS.uproject")}
+    other = {"pid": 8, "projectPath": str(tmp_path / "FPS-wt" / "FPS" / "FPS.uproject")}
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "starting"}), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=[mine, other]), \
+         patch("soft_ue_cli.__main__._run_build_command") as build:
+        with pytest.raises(SystemExit):
+            main_mod.cmd_build_start(ns)
+    build.assert_not_called()
+    out = json.loads(capsys.readouterr().out)
+    assert out["code"] == "EDITOR_ALREADY_RUNNING"
+    assert out["pids"] == [7]
+
+
+def test_build_start_ignores_other_checkouts_editor_processes(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    other = {"pid": 8, "projectPath": str(tmp_path / "FPS" / "FPS.uproject")}
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1)
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "not running"}), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=[other]), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd") as load, \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=1):
+        with pytest.raises(SystemExit):
+            main_mod.cmd_build_start(ns)
+    load.assert_called_once()
+    assert "EDITOR_ALREADY_RUNNING" not in capsys.readouterr().out
+
+
+def test_build_start_config_selects_the_project_to_launch(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS")  # cwd: main
+    worktree = _checkout(tmp_path, monkeypatch, "FPS-wt/FPS", cd=False)
+    (worktree / "soft-ue.config.json").write_text(json.dumps({"build-command": "b", "start-command": "s"}))
+    (worktree / "Saved" / "Logs").mkdir(parents=True)
+    launched = []
+
+    def launch(path, **_):
+        launched.append(path)
+        (worktree / "Saved" / "Logs" / "FPS.log").write_text("")
+
+    ns = argparse.Namespace(config=str(worktree / "soft-ue.config.json"), timeout=0.05, poll_interval=0.01)
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "not running"}), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=None), \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=0), \
+         patch("soft_ue_cli.__main__._launch_editor_for_wait", side_effect=launch):
+        with pytest.raises(SystemExit):
+            main_mod.cmd_build_start(ns)  # times out waiting: no real editor
+    assert launched == [str(worktree.resolve() / "FPS.uproject")]
+
+
+def test_launch_hands_an_explicit_port_to_the_editor(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    (project / "soft-ue.config.json").write_text(json.dumps({"start-command": "start-editor"}))
+    monkeypatch.setenv("SOFT_UE_BRIDGE_URL", "http://127.0.0.1:18085")  # what --server sets
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: calls.append((cmd, kw)))
+    main_mod._launch_editor_for_wait(str(project / "FPS.uproject"))
+    cmd, kw = calls[0]
+    assert cmd == "start-editor"
+    assert kw["env"]["SOFT_UE_BRIDGE_PORT"] == "18085"
+
+
+def test_launch_without_explicit_port_adds_none(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS")
+    (project / "soft-ue.config.json").write_text(json.dumps({"start-command": "start-editor"}))
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: calls.append(kw))
+    main_mod._launch_editor_for_wait(str(project / "FPS.uproject"))
+    assert "SOFT_UE_BRIDGE_PORT" not in calls[0]["env"]
+
+
+def test_build_start_reports_where_the_editor_came_up_when_the_port_was_not_honoured(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    (project / "Saved" / "Logs").mkdir(parents=True)
+    monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "18085")
+    monkeypatch.setattr("soft_ue_cli.discovery.bridge_project_dir", lambda url, timeout=2.0: None)
+    monkeypatch.setattr("soft_ue_cli.discovery.project_bridge_url", lambda project_dir: "http://127.0.0.1:18083")
+
+    def health(timeout=None, url=None):
+        if url == "http://127.0.0.1:18083":
+            return {"running": True, "project_dir": str(project) + "/"}
+        return {"error": "connection refused"}
+
+    ns = argparse.Namespace(config=None, timeout=5.0, poll_interval=0.01)
+    with patch("soft_ue_cli.__main__.health_check", side_effect=health), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd"), \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=0), \
+         patch("soft_ue_cli.__main__._launch_editor_for_wait",
+               side_effect=lambda *a, **k: (project / "Saved" / "Logs" / "FPS.log").write_text("")), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=None):
+        main_mod.cmd_build_start(ns)
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["server"] == "http://127.0.0.1:18083"
+    assert out["requested_server"] == "http://127.0.0.1:18085"
+    assert "SOFT_UE_BRIDGE_PORT" in out["warning"]
+
+
+def test_build_start_does_not_take_another_projects_bridge_as_ready(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    (project / "Saved" / "Logs").mkdir(parents=True)
+    calls = []
+
+    def health(timeout=None, url=None):
+        calls.append(url)
+        if len(calls) == 1:
+            return {"error": "not running"}  # pre-flight
+        return {"running": True, "project_dir": "C:/Other/FPS/"}
+
+    ns = argparse.Namespace(config=None, timeout=0.05, poll_interval=0.01)
+    with patch("soft_ue_cli.__main__.health_check", side_effect=health), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd"), \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=0), \
+         patch("soft_ue_cli.__main__._launch_editor_for_wait",
+               side_effect=lambda *a, **k: (project / "Saved" / "Logs" / "FPS.log").write_text("")), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=None):
+        with pytest.raises(SystemExit):
+            main_mod.cmd_build_start(ns)
+    assert json.loads(capsys.readouterr().out)["status"] == "timeout"
+
+
+def test_shutdown_refuses_an_explicit_server_of_another_project(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    monkeypatch.setenv("SOFT_UE_BRIDGE_URL", "http://127.0.0.1:18080")
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "FPS", []))
+    with patch("soft_ue_cli.client.shutdown") as shutdown, \
+         patch("soft_ue_cli.__main__._kill_ue_process") as kill:
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_shutdown(argparse.Namespace(wait_timeout=1.0))
+    assert exc.value.code == 1
+    shutdown.assert_not_called()
+    kill.assert_not_called()
+    assert json.loads(capsys.readouterr().out)["code"] == "BRIDGE_OF_ANOTHER_PROJECT"
+
+
+def test_shutdown_with_a_stale_instance_sends_nothing_and_reports_not_running(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS", {"port": 18080, "pid": 4_000_000})
+
+    def no_post(*a, **k):
+        raise AssertionError("no shutdown request may be sent")
+
+    monkeypatch.setattr("httpx.post", no_post)
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "FPS", []))
+    with patch("soft_ue_cli.__main__._check_ue_processes", return_value=None):
+        main_mod.cmd_shutdown(argparse.Namespace(wait_timeout=1.0))
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"success": True, "running": False, "message": "Unreal Editor is not running."}
+
+
+def test_shutdown_build_restart_in_a_worktree_never_touches_mains_editor(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS-wt/FPS")
+    main_proc = {"pid": 1, "projectPath": str(tmp_path / "FPS" / "FPS.uproject")}
+
+    def no_post(*a, **k):
+        raise AssertionError("no shutdown request may be sent")
+
+    monkeypatch.setattr("httpx.post", no_post)
+    monkeypatch.setattr("httpx.get", _main_editor_on_18080(tmp_path / "FPS", []))
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    ns = argparse.Namespace(config=None, timeout=1.0, poll_interval=0.1, wait_timeout=0.0)
+    with patch("soft_ue_cli.__main__._check_ue_processes", return_value=[main_proc]), \
+         patch("soft_ue_cli.__main__._kill_ue_process") as kill, \
+         patch("soft_ue_cli.__main__.cmd_build_start") as build_start:
+        main_mod.cmd_shutdown_build_restart(ns)
+    kill.assert_not_called()
+    build_start.assert_called_once()
+
+
+def test_processes_for_local_project_without_a_project_is_empty(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    assert main_mod._processes_for_local_project([{"pid": 1, "projectName": "FPS"}]) == []
+
+
+def test_status_with_a_stale_instance_reports_why(tmp_path, monkeypatch, capsys):
+    from soft_ue_cli import __main__ as main_mod
+
+    _checkout(tmp_path, monkeypatch, "FPS", {"port": 18080, "pid": 4_000_000})
+    with patch("soft_ue_cli.__main__._check_ue_processes", return_value=[]):
+        main_mod.cmd_status(argparse.Namespace())
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "not_running"
+    assert "stale" in out["detail"]

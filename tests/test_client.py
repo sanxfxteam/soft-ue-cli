@@ -193,3 +193,28 @@ def test_health_check_timeout(monkeypatch):
     with _patch_url():
         result = health_check()
     assert "error" in result
+
+
+def test_health_check_reports_a_stale_instance_instead_of_raising(tmp_path, monkeypatch):
+    project = tmp_path / "FPS"
+    (project / ".soft-ue-bridge").mkdir(parents=True)
+    (project / "FPS.uproject").write_text("{}")
+    (project / ".soft-ue-bridge" / "instance.json").write_text(json.dumps({"port": 18080, "pid": 4_000_000}))
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("SOFT_UE_BRIDGE_URL", raising=False)
+    monkeypatch.delenv("SOFT_UE_BRIDGE_PORT", raising=False)
+    result = health_check(timeout=0.1)
+    assert "stale" in result["error"]
+
+
+def test_health_check_with_explicit_url_skips_discovery(monkeypatch):
+    seen = []
+
+    def fake_get(url, timeout):
+        seen.append(url)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"running": True})
+
+    monkeypatch.setattr(client_mod, "get_server_url", lambda: (_ for _ in ()).throw(AssertionError("discovery")))
+    monkeypatch.setattr(client_mod.httpx, "get", fake_get)
+    assert health_check(url="http://127.0.0.1:18090") == {"running": True}
+    assert seen == ["http://127.0.0.1:18090/bridge"]
