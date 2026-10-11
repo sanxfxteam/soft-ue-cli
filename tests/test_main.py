@@ -2696,6 +2696,27 @@ def test_cmd_build_start_reports_editor_exit(tmp_path, monkeypatch, capsys):
     assert "Fatal error!" in out["log_tail"]
 
 
+def test_cmd_build_start_reports_a_taken_bridge_port(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run_build_start_wait(
+            tmp_path, monkeypatch,
+            log_text=(
+                "LogSoftUEBridge: SoftUEBridgeSubsystem initializing\n"
+                "LogSoftUEBridge: Warning: Port 18082 unavailable\n"
+                "LogSoftUEBridge: Error: Bridge port 18082 (pinned by -SoftUEBridgePort) is taken by another "
+                "process: the bridge is NOT running in this editor\n"
+            ),
+            timeout=300.0,
+        )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["status"] == "bridge_port_taken"
+    assert out["editor"] == "running_without_bridge"
+    assert "18082" in out["message"]
+    assert "[Bridge Error]" in captured.err
+
+
 def test_cmd_build_start_timeout_emits_json(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         _run_build_start_wait(tmp_path, monkeypatch, timeout=0.05)

@@ -323,8 +323,8 @@ def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
     from .discovery import requested_port
 
     # An explicitly requested port (--server, SOFT_UE_BRIDGE_URL or SOFT_UE_BRIDGE_PORT on localhost) is
-    # handed to the editor through SOFT_UE_BRIDGE_PORT, the bridge's only port setting. It is the first port
-    # the bridge tries; the start-command must pass the environment on to the editor.
+    # handed to the start-command through SOFT_UE_BRIDGE_PORT. The bridge pins it (no other port in the editor);
+    # a start-command that launches through WMI must forward it as -SoftUEBridgePort=N (run_editor.py does).
     env = os.environ.copy()
     port = requested_port()
     if port:
@@ -3118,6 +3118,9 @@ _AS_ERROR_MARKER = "Angelscript: Error:"
 _AS_ERROR_GRACE_SECONDS = 10.0
 _AS_ERROR_REPORT_LIMIT = 20
 _EXIT_ANGELSCRIPT_ERRORS = 2
+# A bridge whose pinned port (-SoftUEBridgePort, SOFT_UE_BRIDGE_PORT, [SoftUEBridge] Port) is taken stays off
+# instead of moving to another port; the editor runs on without it, so waiting for it would only time out.
+_BRIDGE_PORT_TAKEN_MARKER = "LogSoftUEBridge: Error: Bridge port"
 _PROCESS_CHECK_INTERVAL_SECONDS = 10.0
 _EDITOR_START_GRACE_SECONDS = 60.0
 
@@ -3258,6 +3261,7 @@ def cmd_build_start(args: argparse.Namespace) -> None:
     as_errors = _AngelscriptErrorCollector()
     last_process_check = start_time
     editor_seen = False
+    bridge_error: list[str] = []
 
     def drain_log() -> None:
         if not log_file:
@@ -3269,6 +3273,9 @@ def cmd_build_start(args: argparse.Namespace) -> None:
             line = line.rstrip("\r\n")
             if as_errors.feed(line):
                 print(f"[AS Error] {line}", file=sys.stderr)
+            elif _BRIDGE_PORT_TAKEN_MARKER in line and not bridge_error:
+                bridge_error.append(line.partition("LogSoftUEBridge: Error: ")[2].strip())
+                print(f"[Bridge Error] {bridge_error[0]}", file=sys.stderr)
 
     def fail(status: str, message: str, exit_code: int, **extra: object) -> None:
         drain_log()
@@ -3337,6 +3344,18 @@ def cmd_build_start(args: argparse.Namespace) -> None:
                             "elapsed_seconds": round(time.monotonic() - start_time, 1),
                         })
                         break
+
+            if bridge_error:
+                fail(
+                    "bridge_port_taken",
+                    bridge_error[0],
+                    1,
+                    editor="running_without_bridge",
+                    next=(
+                        "Free the port (netstat -ano | findstr :<port>) and restart the bridge from the editor's "
+                        "toolbar, or stop this editor and start it on another port (-SoftUEBridgePort=N)."
+                    ),
+                )
 
             # A failed initial compile blocks startup in the Angelscript modal, which
             # hot-reloads until the scripts compile. Report instead of waiting it out.

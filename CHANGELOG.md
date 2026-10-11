@@ -2,6 +2,12 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.38.1] - 2026-10-11
+
+### Changed
+- `build-start` stops waiting when the editor's bridge refused its pinned port (SoftUEBridge with fixed ports per checkout: `-SoftUEBridgePort=N`, `SOFT_UE_BRIDGE_PORT` or `[SoftUEBridge] Port` taken by another process; the bridge then stays off instead of moving to the next free port). It reports `bridge_port_taken` (exit 1, `editor: running_without_bridge`, the bridge's error as `message`) instead of timing out.
+- An explicitly requested port is still handed to the `start-command` as `SOFT_UE_BRIDGE_PORT`; a start-command that launches through WMI (which drops the environment) must forward it as `-SoftUEBridgePort=N`.
+
 ## [1.38.0] - 2026-10-06
 
 ### Changed
