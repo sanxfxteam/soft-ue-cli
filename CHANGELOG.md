@@ -2,6 +2,11 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.39.0] - 2026-10-11
+
+### Added
+- `build-start --nullrhi` (also on `shutdown-build-restart`) starts the editor without rendering: it appends `-nullrhi` to the `start-command` for that launch only (the `build-command` is unchanged), so a GPU-free editor (no window, almost no video memory) no longer needs an edited `soft-ue.config.json`. The `start-command` must pass extra arguments on to the editor.
+
 ## [1.38.1] - 2026-10-11
 
 ### Changed

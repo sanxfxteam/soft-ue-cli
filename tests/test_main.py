@@ -2902,6 +2902,57 @@ def test_launch_without_explicit_port_adds_none(tmp_path, monkeypatch):
     assert "SOFT_UE_BRIDGE_PORT" not in calls[0]["env"]
 
 
+def test_launch_appends_extra_args_to_the_start_command(tmp_path, monkeypatch):
+    from soft_ue_cli import __main__ as main_mod
+
+    project = _checkout(tmp_path, monkeypatch, "FPS")
+    (project / "soft-ue.config.json").write_text(json.dumps({"start-command": "python run_editor.py --verbose"}))
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: calls.append(cmd))
+    main_mod._launch_editor_for_wait(str(project / "FPS.uproject"), extra_args=["-nullrhi"])
+    assert calls == ["python run_editor.py --verbose -nullrhi"]
+
+
+def test_with_extra_args_quotes_each_argument():
+    from soft_ue_cli.__main__ import _with_extra_args
+
+    assert _with_extra_args("start", []) == "start"
+    assert _with_extra_args(["start", "a"], ["-nullrhi"]) == ["start", "a", "-nullrhi"]
+    quoted = _with_extra_args("start", ["-nullrhi", "a b"])
+    assert quoted in ('start -nullrhi "a b"', "start -nullrhi 'a b'")
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["build-start"], []),
+    (["build-start", "--nullrhi"], ["-nullrhi"]),
+    (["shutdown-build-restart", "--nullrhi"], ["-nullrhi"]),
+])
+def test_build_start_nullrhi_reaches_only_the_start_command(tmp_path, monkeypatch, argv, expected):
+    from soft_ue_cli import __main__ as main_mod
+    from soft_ue_cli.__main__ import build_parser
+
+    project = _checkout(tmp_path, monkeypatch, "FPS")
+    (project / "Saved" / "Logs").mkdir(parents=True)
+    ns = build_parser().parse_args([*argv, "--timeout", "0.05", "--poll-interval", "0.01"])
+    launched = []
+
+    def launch(path, **kw):
+        launched.append(kw.get("extra_args"))
+        (project / "Saved" / "Logs" / "FPS.log").write_text("")
+
+    with patch("soft_ue_cli.__main__.health_check", return_value={"error": "not running"}), \
+         patch("soft_ue_cli.client.shutdown"), \
+         patch("soft_ue_cli.__main__._wait_for_ue_shutdown"), \
+         patch("soft_ue_cli.__main__._check_ue_processes", return_value=None), \
+         patch("soft_ue_cli.__main__._load_build_command", return_value="build.cmd"), \
+         patch("soft_ue_cli.__main__._run_build_command", return_value=0) as build, \
+         patch("soft_ue_cli.__main__._launch_editor_for_wait", side_effect=launch):
+        with pytest.raises(SystemExit):
+            ns.func(ns)  # times out waiting: no real editor
+    build.assert_called_once_with("build.cmd")
+    assert launched == [expected]
+
+
 def test_build_start_reports_where_the_editor_came_up_when_the_port_was_not_honoured(tmp_path, monkeypatch, capsys):
     from soft_ue_cli import __main__ as main_mod
 

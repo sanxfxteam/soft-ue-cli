@@ -300,7 +300,20 @@ def cmd_shutdown(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
+def _with_extra_args(start_cmd: str | list, extra_args: list[str]) -> str | list:
+    """start_cmd with extra_args appended, each quoted for the shell that runs the string."""
+    if not extra_args:
+        return start_cmd
+    if isinstance(start_cmd, list):
+        return [*start_cmd, *extra_args]
+    import shlex
+    import subprocess
+
+    quoted = subprocess.list2cmdline(extra_args) if os.name == "nt" else shlex.join(extra_args)
+    return f"{start_cmd} {quoted}"
+
+
+def _launch_editor_for_wait(path: str, config_path: Path | None = None, extra_args: list[str] | None = None) -> None:
     config_file = config_path or _find_config_file(Path(path))
     if not config_file:
         print("error: soft-ue.config.json not found. Ensure you are in the project directory.", file=sys.stderr)
@@ -317,6 +330,7 @@ def _launch_editor_for_wait(path: str, config_path: Path | None = None) -> None:
         print(f"error: 'start-command' not defined in {config_file.name}", file=sys.stderr)
         sys.exit(1)
 
+    start_cmd = _with_extra_args(start_cmd, extra_args or [])
     print(f"Launching editor using start-command: {start_cmd}", file=sys.stderr)
     import subprocess
 
@@ -3239,7 +3253,8 @@ def cmd_build_start(args: argparse.Namespace) -> None:
 
     # 4. Start editor
     print(f"Launching editor for project: {uproject_path.name}", file=sys.stderr)
-    _launch_editor_for_wait(str(uproject_path), config_path=config_path)
+    extra_args = ["-nullrhi"] if getattr(args, "nullrhi", False) else []
+    _launch_editor_for_wait(str(uproject_path), config_path=config_path, extra_args=extra_args)
 
     # 5. Tail follow log file & watch for Angelscript errors
     log_start = time.monotonic()
@@ -5994,6 +6009,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SEC",
         help="Polling interval in seconds for the bridge health check (default: 2.0)",
     )
+    p_build_start.add_argument(
+        "--nullrhi",
+        action="store_true",
+        help=(
+            "Start the editor without rendering (-nullrhi): no window, almost no video memory. "
+            "Appends -nullrhi to the start-command (not the build-command)."
+        ),
+    )
     p_build_start.set_defaults(func=cmd_build_start)
 
     # shutdown-build-restart
@@ -6031,6 +6054,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         metavar="SEC",
         help="Seconds to wait for the editor process to exit before force-killing it, prior to rebuilding (default: 30).",
+    )
+    p_sbr.add_argument(
+        "--nullrhi",
+        action="store_true",
+        help=(
+            "Start the editor without rendering (-nullrhi): no window, almost no video memory. "
+            "Appends -nullrhi to the start-command (not the build-command)."
+        ),
     )
     p_sbr.set_defaults(func=cmd_shutdown_build_restart)
 

@@ -389,6 +389,8 @@ These commands are blocked/restricted when whitelisted mode is active (enforced 
 | Command | Description |
 |---------|-------------|
 | `build-and-relaunch` | Trigger a full C++ rebuild and optionally relaunch the editor (`--wait` monitors staged progress and reports timeout diagnostics) |
+| `build-start` | Run the `build-command` from `soft-ue.config.json`, launch the editor with its `start-command`, and report Angelscript errors until the bridge is ready. `--nullrhi` starts the editor without rendering (appends `-nullrhi` to the `start-command` for this launch only): no window, almost no video memory |
+| `shutdown-build-restart` | Shut the editor down, then do what `build-start` does (same `--nullrhi`) |
 | `reload-bridge-module` | Reload the bridge editor module from disk without a full editor restart |
 | `set-viewport-camera` | Set editor viewport camera position, rotation, or preset view (top/front/right/perspective) |
 
