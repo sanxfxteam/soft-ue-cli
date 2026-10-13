@@ -670,7 +670,7 @@ Several editors can run at once (different projects, git worktrees of one projec
    - its `pid` is alive and its `project_dir` is this project: the bridge on its port is used, unless that bridge reports another project, which is refused ("belongs to another project");
    - missing, written by another checkout's editor, or its `pid` has exited (an editor killed without cleanup): this project's editor is **not running**. Commands fail with that message, `status` reports `not_running`, `build-start` builds and launches. The stale file is ignored, not deleted.
    - There is **no fallback to 18080** once a project is resolved: that port usually belongs to another checkout's editor.
-3. No project resolved (run outside any project folder, e.g. a repository root above the project) and none of the overrides: bridge commands fail with "no soft-ue.config.json or .uproject in <cwd> or above", naming a project one folder down when there is one ("cd ProjectShiva"). There is no default port.
+3. No project resolved (run outside any project folder, e.g. a repository root above the project) and none of the overrides: bridge commands fail with "no soft-ue.config.json or .uproject in <cwd> or above", naming a project one folder down when there is one ("cd ProjectShiva"), or listing them when there are several. There is no default port.
 
 An `instance.json` with the plugin's `pid` and `project_dir`, whose `pid` is the live process that wrote it, is used without asking the bridge (the plugin deletes the file when its bridge stops, and a `pid` reused by a process started after the file was written counts as exited). Older files without them are checked with a `GET /bridge` (2 s) before the call.
 
