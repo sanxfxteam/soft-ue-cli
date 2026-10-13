@@ -14,6 +14,8 @@ from .discovery import get_server_url
 
 _id_counter = itertools.count(1)
 
+_MAY_HAVE_RUN = "The request may have reached the editor, so the command may have run: check the editor log."
+
 
 def _handle_startup_recovery_for_connection() -> str | None:
     """Handle an Unreal startup recovery prompt before retrying a failed connection."""
@@ -68,9 +70,22 @@ def call_tool(tool_name: str, arguments: dict[str, Any], timeout: float | None =
                 "  - A modal dialog may be blocking the UE editor (check for popups)\n"
                 "  - The operation is slow (set SOFT_UE_BRIDGE_TIMEOUT=<seconds>)"
             )
+            if not isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)):
+                message += f"\n{_MAY_HAVE_RUN}"
         if note:
             message += f"\n{note}"
         return message
+
+    def cut_error(exc: httpx.TransportError) -> BridgeError:
+        return BridgeError(
+            kind=ErrorKind.EXPECTED,
+            message=(
+                f"the bridge at {endpoint} closed the connection without a full response "
+                f"({type(exc).__name__}: {exc}). {_MAY_HAVE_RUN}"
+            ),
+            tool_name=tool_name,
+            arguments=arguments,
+        )
 
     try:
         response = post_once()
@@ -91,6 +106,8 @@ def call_tool(tool_name: str, arguments: dict[str, Any], timeout: float | None =
                     tool_name=tool_name,
                     arguments=arguments,
                 )
+            except httpx.TransportError as retry_exc:
+                raise cut_error(retry_exc)
             except httpx.HTTPStatusError as retry_exc:
                 kind = ErrorKind.UNEXPECTED if retry_exc.response.status_code >= 500 else ErrorKind.EXPECTED
                 raise BridgeError(
@@ -106,6 +123,8 @@ def call_tool(tool_name: str, arguments: dict[str, Any], timeout: float | None =
                 tool_name=tool_name,
                 arguments=arguments,
             )
+    except httpx.TransportError as exc:  # RemoteProtocolError, ReadError, WriteError, ...: cut or reset
+        raise cut_error(exc)
     except httpx.HTTPStatusError as exc:
         kind = ErrorKind.UNEXPECTED if exc.response.status_code >= 500 else ErrorKind.EXPECTED
         raise BridgeError(
@@ -115,26 +134,32 @@ def call_tool(tool_name: str, arguments: dict[str, Any], timeout: float | None =
             arguments=arguments,
         )
 
+    def bad_reply(message: str) -> BridgeError:
+        return BridgeError(kind=ErrorKind.UNEXPECTED, message=message, tool_name=tool_name, arguments=arguments)
+
+    if not response.content.strip():
+        raise bad_reply(f"the bridge at {endpoint} sent an empty response. {_MAY_HAVE_RUN}")
     try:
         data = response.json()
     except Exception:
-        raise BridgeError(
-            kind=ErrorKind.UNEXPECTED,
-            message="server returned non-JSON response",
-            tool_name=tool_name,
-            arguments=arguments,
-        )
+        raise bad_reply("server returned non-JSON response")
+    if not isinstance(data, dict):
+        raise bad_reply(f"the bridge at {endpoint} sent a reply that is not a JSON-RPC object. {_MAY_HAVE_RUN}")
 
     if "error" in data:
         err = data["error"]
         raise BridgeError(
             kind=ErrorKind.UNEXPECTED,
-            message=str(err.get("message", err)),
+            message=str(err.get("message", err) if isinstance(err, dict) else err),
             tool_name=tool_name,
             arguments=arguments,
         )
 
-    result = data.get("result", {})
+    if "result" not in data:
+        raise bad_reply(f"the bridge at {endpoint} sent a reply with neither 'result' nor 'error'. {_MAY_HAVE_RUN}")
+    result = data["result"]
+    if not isinstance(result, dict):
+        raise bad_reply(f"the bridge at {endpoint} sent an unexpected 'result': {result!r}")
     if result.get("isError"):
         content = result.get("content", [])
         msg = content[0].get("text", "unknown error") if content else "unknown error"

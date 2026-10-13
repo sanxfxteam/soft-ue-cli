@@ -1674,18 +1674,33 @@ def cmd_run_python_script(args: argparse.Namespace) -> None:
             sys.exit(1)
         return
 
+    printed = False
     # Print log lines if captured
     if getattr(args, "capture_logs", False) and "console_logs" in res and res["console_logs"]:
         for line in res["console_logs"]:
             print(line)
+        printed = True
 
     # Print Python script stdout/stderr output
     if "output" in res and res["output"]:
         print(res["output"])
+        printed = True
 
     if res.get("success", True) is False:
         print(f"error: {res.get('error', 'Unknown python error')}", file=sys.stderr)
         sys.exit(1)
+    if "success" not in res:
+        print(
+            "note: the bridge reply has no 'success' field, so the script's result is unknown; "
+            "check the editor log.",
+            file=sys.stderr,
+        )
+    elif not printed:
+        print(
+            "note: the script ran and printed nothing (output only carries print(); "
+            "add --capture-logs for the UE log lines it caused).",
+            file=sys.stderr,
+        )
 
 
 def cmd_run_lua_script(args: argparse.Namespace) -> None:

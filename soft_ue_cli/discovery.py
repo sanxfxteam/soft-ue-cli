@@ -11,6 +11,10 @@ run for, so the target is resolved per project:
    that has exited, it means "this project's editor is not running" (``EditorNotRunning``); a bridge on its
    port that reports another project is refused (``WrongProjectBridge``). There is no port fallback.
 3. No project resolved and nothing explicit: ``NoProjectFound`` (no fallback to 18080 either).
+
+The ``GET /bridge`` project check is skipped when instance.json carries the plugin's own pid and project_dir
+and that pid is the live process that wrote the file: the plugin deletes the file when its bridge stops, so
+the port is that editor's. The probe (2 s) is only sent for older files without them.
 """
 
 from __future__ import annotations
@@ -198,6 +202,39 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _process_start_time(pid: int) -> float | None:
+    """Creation time (epoch seconds) of a running process, or None when unknown (not Windows, no access)."""
+    if os.name != "nt" or pid <= 0:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        return created / 1e7 - 11644473600.0  # FILETIME (100 ns since 1601) -> epoch
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _pid_wrote_file(pid: int, path: Path) -> bool:
+    """False when pid belongs to a process started after path was last written (the pid was reused)."""
+    started = _process_start_time(pid)
+    if started is None:
+        return True
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return True
+    return started <= written + 2.0
+
+
 def _instance_file(project_dir: Path) -> Path:
     return project_dir / ".soft-ue-bridge" / "instance.json"
 
@@ -235,14 +272,20 @@ def _find_project_instance() -> str | None:
     return _load_instance_file(candidate) if candidate else None
 
 
-def bridge_project_dir(url: str, timeout: float = 2.0) -> str | None:
-    """project_dir reported by the bridge at url (None: not reported, unreachable or busy)."""
+def bridge_info(url: str, timeout: float = 2.0) -> dict | None:
+    """The GET /bridge health reply of the bridge at url (None: unreachable, busy or not JSON)."""
     try:
         import httpx
 
-        reported = httpx.get(f"{url}/bridge", timeout=timeout).json().get("project_dir")
+        data = httpx.get(f"{url}/bridge", timeout=timeout).json()
     except Exception:
         return None
+    return data if isinstance(data, dict) else None
+
+
+def bridge_project_dir(url: str, timeout: float = 2.0) -> str | None:
+    """project_dir reported by the bridge at url (None: not reported, unreachable or busy)."""
+    reported = (bridge_info(url, timeout) or {}).get("project_dir")
     return reported if isinstance(reported, str) and reported else None
 
 
@@ -250,10 +293,12 @@ def project_bridge_url(project_dir: Path) -> str:
     """URL of the project's own live bridge.
 
     Raises EditorNotRunning when the project's instance.json is missing, unreadable, written by another
-    checkout's editor (its project_dir) or by an editor that has exited (its pid). Such a file is ignored,
-    not deleted: the editor may be rewriting it right now. Raises WrongProjectBridge when the bridge on the
-    recorded port reports another project. A bridge that does not answer (busy or still starting) or does
-    not report project_dir (older plugin) is trusted.
+    checkout's editor (its project_dir) or by an editor that has exited (its pid, or a process started after
+    the file was written: a reused pid). Such a file is ignored, not deleted: the editor may be rewriting it
+    right now. A file with the plugin's pid and project_dir that pass these checks is trusted without asking
+    the bridge (see the module docstring). For older files the bridge is asked (GET /bridge, 2 s):
+    WrongProjectBridge when it reports another project; one that does not answer (busy or still starting)
+    or does not report project_dir is trusted.
     """
     path = _instance_file(project_dir)
     if not path.is_file():
@@ -268,6 +313,12 @@ def project_bridge_url(project_dir: Path) -> str:
     pid = data.get("pid")
     if isinstance(pid, int) and not _pid_alive(pid):
         raise EditorNotRunning(project_dir, f"{path} is stale: the editor that wrote it (pid {pid}) has exited")
+    if isinstance(pid, int) and not _pid_wrote_file(pid, path):
+        raise EditorNotRunning(
+            project_dir, f"{path} is stale: pid {pid} now belongs to a process started after the file was written"
+        )
+    if isinstance(pid, int) and isinstance(recorded, str) and recorded:
+        return url  # the live editor that wrote the file for this project: no probe needed
 
     key = (url, os.path.normcase(str(project_dir)), pid)
     if key in _checked:
