@@ -257,46 +257,181 @@ def cmd_status(args: argparse.Namespace) -> None:
     })
 
 
-def cmd_shutdown(args: argparse.Namespace) -> None:
+def _wait_payload(result: dict, pid: int | None) -> dict:
+    """JSON payload for a _wait_for_ue_shutdown result."""
+    extra = {"pid": pid} if pid is not None else {}
+    if result["exited"] and result["killed"]:
+        return {"success": True, **extra, "killed": True, "message": "Editor process did not exit gracefully; force-killed."}
+    if result["exited"]:
+        return {"success": True, **extra, "message": "Editor shut down and process exited."}
+    return {"success": False, **extra, "killed": True, "message": "Editor process did not exit even after a force-kill."}
+
+
+def _shutdown_every_editor(wait_timeout: float, config_path: Path | None = None) -> dict:
+    """--all: ask the discovered bridge to shut down, then wait on (and force-kill) every editor of this checkout."""
     from .client import shutdown as client_shutdown
-    from .discovery import EditorNotRunning, WrongProjectBridge
+    from .discovery import EditorNotRunning, NoProjectFound, WrongProjectBridge
     from .errors import BridgeError
 
-    _refuse_foreign_explicit_bridge("shutdown")
     try:
         client_shutdown()
         print("Editor shutdown requested successfully.", file=sys.stderr)
+    except NoProjectFound as exc:
+        return {"success": False, "code": "NO_PROJECT", "error": exc.message}
     except BridgeError as exc:
-        # Bridge may already be down; the editor process can still be present
-        # (e.g. hung). Fall through to the process wait/kill instead of failing.
-        print(
-            f"Warning: shutdown request failed (bridge may be down): {exc.message}",
-            file=sys.stderr,
-        )
-        processes = _check_ue_processes()
+        # Bridge may already be down; the editor processes can still be present (e.g. hung).
+        print(f"Warning: shutdown request failed (bridge may be down): {exc.message}", file=sys.stderr)
+        processes = _check_ue_processes(config_path)
         if processes is None and isinstance(exc, WrongProjectBridge):
-            _emit_structured_error("BRIDGE_OF_ANOTHER_PROJECT", exc.message, command="shutdown")
+            return {"success": False, "code": "BRIDGE_OF_ANOTHER_PROJECT", "error": exc.message}
         if (processes is None and isinstance(exc, EditorNotRunning)) or (
             processes is not None and not _processes_for_local_project(processes)
         ):
-            _print_json({"success": True, "running": False, "message": "Unreal Editor is not running."})
-            return
+            return {"success": True, "running": False, "message": "Unreal Editor is not running."}
+    return _wait_payload(_wait_for_ue_shutdown(wait_timeout, config_path), None)
 
-    result = _wait_for_ue_shutdown(args.wait_timeout)
-    if result["exited"] and result["killed"]:
-        _print_json({
-            "success": True,
-            "killed": True,
-            "message": "Editor process did not exit gracefully; force-killed.",
-        })
-    elif result["exited"]:
-        _print_json({"success": True, "message": "Editor shut down and process exited."})
-    else:
-        _print_json({
+
+def _shutdown_own_editor(wait_timeout: float, pid_arg: int | None = None, config_path: Path | None = None) -> dict:
+    """Stop only the editor whose bridge this command resolves (or the --pid one), never other editors.
+
+    The target pid comes from the bridge's GET /bridge (else, for a busy bridge, from the project's checked
+    instance.json). After the shutdown request it is waited on and, past wait_timeout, force-killed. When
+    the request fails nothing is killed, unless pid_arg names the editor; pid_arg is also ended directly
+    when the resolved bridge is not its own. Returns the JSON payload ("success": the editor is gone).
+    """
+    from .client import ShutdownFailed, shutdown as client_shutdown
+    from .discovery import (
+        NoProjectFound,
+        WrongProjectBridge,
+        _pid_alive,
+        _same_dir,
+        bridge_info,
+        explicit_server_url,
+        instance_pid,
+        resolve_project_dir,
+    )
+    from .errors import BridgeError
+
+    try:
+        url, reason, foreign = get_server_url(), None, False
+    except NoProjectFound as exc:
+        return {"success": False, "code": "NO_PROJECT", "error": exc.message}
+    except BridgeError as exc:  # EditorNotRunning, WrongProjectBridge
+        url, reason, foreign = None, exc.message, isinstance(exc, WrongProjectBridge)
+    project = resolve_project_dir()
+
+    if pid_arg is not None:
+        if not _pid_alive(pid_arg):
+            return {"success": True, "running": False, "pid": pid_arg, "message": f"Process {pid_arg} is not running."}
+        processes = _check_ue_processes(config_path)
+        if processes is not None:
+            local = {int(p["pid"]) for p in _processes_for_local_project(processes) if p.get("pid") is not None}
+            if pid_arg not in local:
+                return {
+                    "success": False,
+                    "code": "PID_NOT_THIS_PROJECT",
+                    "error": f"pid {pid_arg} is not an editor of {project} (editors of this project: {sorted(local)}).",
+                }
+
+    bridge_pid = None
+    if url:
+        info = bridge_info(url, timeout=3.0)
+        reported = (info or {}).get("project_dir")
+        if project is not None and isinstance(reported, str) and reported and not _same_dir(reported, project):
+            url, reason, foreign = None, f"the bridge at {url} belongs to another project ({reported})", True
+        elif info is not None and isinstance(info.get("pid"), int):
+            bridge_pid = info["pid"]
+        elif explicit_server_url() is None and project is not None:
+            bridge_pid = instance_pid(project)  # busy bridge: its instance.json passed discovery's checks
+
+    target = bridge_pid
+    if pid_arg is not None:
+        if url and bridge_pid != pid_arg:
+            owner = f"its pid is {bridge_pid}" if bridge_pid else "it reports no pid"
+            reason = f"the bridge at {url} is not pid {pid_arg}'s ({owner})"
+            url = None
+        target = pid_arg
+
+    requested = maybe_delivered = False
+    if url:
+        try:
+            client_shutdown(url=url)
+            requested = True
+            print(f"Editor shutdown requested (pid {target or 'unknown'}).", file=sys.stderr)
+        except ShutdownFailed as exc:
+            reason, maybe_delivered = exc.message, exc.maybe_delivered
+            print(f"Warning: {exc.message}", file=sys.stderr)
+
+    if requested or maybe_delivered:
+        if target is None:
+            gone = _wait_for_bridge_down(url, wait_timeout)
+            return {
+                "success": gone,
+                "message": (
+                    "Shutdown requested; the bridge stopped answering. Its process was not checked: the bridge "
+                    "reports no pid (older plugin)."
+                    if gone
+                    else f"The bridge still answers {wait_timeout:g}s after the shutdown request; nothing was killed "
+                    "(the bridge reports no pid: pass --pid N)."
+                ),
+            }
+        result = _wait_for_ue_shutdown(wait_timeout, config_path, pid=target, kill=requested or pid_arg is not None)
+        if result["exited"] or result["killed"]:
+            return _wait_payload(result, target)
+        return {
             "success": False,
-            "killed": True,
-            "message": "Editor process did not exit even after a force-kill.",
-        })
+            "code": "EDITOR_STILL_RUNNING",
+            "pid": target,
+            "error": (
+                f"the editor (pid {target}) did not exit within {wait_timeout:g}s and was not killed: the shutdown "
+                f"request failed ({reason}). Pass --pid {target} to end it."
+            ),
+        }
+
+    if pid_arg is not None:
+        print(f"No shutdown request sent ({reason}); ending process {pid_arg}.", file=sys.stderr)
+        _kill_pid(pid_arg, config_path)
+        result = _wait_for_ue_shutdown(5.0, config_path, pid=pid_arg, kill=False)
+        return _wait_payload({"exited": result["exited"], "killed": True}, pid_arg)
+
+    local = _local_editor_processes(config_path)
+    pids = [p.get("pid") for p in local]
+    if foreign:
+        payload = {"success": False, "code": "BRIDGE_OF_ANOTHER_PROJECT", "error": reason}
+        if pids:
+            payload["pids"] = pids
+        return payload
+    if url is None and not pids and target is None:
+        return {"success": True, "running": False, "message": "Unreal Editor is not running."}
+    return {
+        "success": False,
+        "code": "SHUTDOWN_REQUEST_FAILED",
+        "error": f"{reason}; nothing was stopped.",
+        "pids": [target] if target is not None else pids,
+        "next": "Pass --pid N to end that editor, or --all to stop every editor of this checkout.",
+    }
+
+
+def _wait_for_bridge_down(url: str, timeout: float) -> bool:
+    """True once the bridge at url stops answering GET /bridge (within timeout)."""
+    from .discovery import bridge_info
+
+    deadline = time.monotonic() + timeout
+    while bridge_info(url, timeout=2.0) is not None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1.0)
+    return True
+
+
+def cmd_shutdown(args: argparse.Namespace) -> None:
+    _refuse_foreign_explicit_bridge("shutdown")
+    if getattr(args, "all", False):
+        payload = _shutdown_every_editor(args.wait_timeout)
+    else:
+        payload = _shutdown_own_editor(args.wait_timeout, getattr(args, "pid", None))
+    _print_json(payload)
+    if not payload.get("success"):
         sys.exit(1)
 
 
@@ -3065,16 +3200,65 @@ def _kill_ue_process(pid: int, config_path: Path | None = None) -> bool:
     return ran is not None and ran[0] == 0
 
 
-def _wait_for_ue_shutdown(timeout: float, config_path: Path | None = None) -> dict:
-    """Wait until the local project's UE process has fully exited.
+def _force_kill_pid(pid: int) -> bool:
+    """End one process tree without the project's process command (taskkill /T /F, or SIGKILL)."""
+    import subprocess
 
-    Polls the configured check-ue-process-command. On timeout, force-kills any
-    remaining processes and re-polls briefly to confirm. Returns a result dict:
-      {"exited": bool, "killed": bool}
-    "exited" is True when no local UE process remains. "killed" is True when a
-    force-kill was attempted. When the process-check command is not configured,
-    returns immediately with exited=True (best-effort, legacy behavior).
+    try:
+        if os.name == "nt":
+            proc = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
+            return proc.returncode == 0
+        import signal
+
+        os.kill(pid, signal.SIGKILL)
+        return True
+    except Exception:
+        return False
+
+
+def _kill_pid(pid: int, config_path: Path | None = None) -> bool:
+    """Force-kill one editor: the configured check-ue-process-command --kill, else the OS."""
+    return _kill_ue_process(pid, config_path) or _force_kill_pid(pid)
+
+
+def _wait_for_pid_exit(pid: int, timeout: float, config_path: Path | None, kill: bool) -> dict:
+    from .discovery import _pid_alive
+
+    deadline = time.monotonic() + timeout
+    if _pid_alive(pid):
+        print(f"Waiting for the editor process (pid {pid}) to exit...", file=sys.stderr)
+    while _pid_alive(pid):
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+    else:
+        print("Editor process exited.", file=sys.stderr)
+        return {"exited": True, "killed": False}
+    if not kill:
+        return {"exited": False, "killed": False}
+    print(f"Editor (pid {pid}) did not exit within {timeout:g}s; force-killing it.", file=sys.stderr)
+    _kill_pid(pid, config_path)
+    kill_deadline = time.monotonic() + 5.0
+    while time.monotonic() < kill_deadline:
+        if not _pid_alive(pid):
+            return {"exited": True, "killed": True}
+        time.sleep(0.5)
+    return {"exited": not _pid_alive(pid), "killed": True}
+
+
+def _wait_for_ue_shutdown(
+    timeout: float, config_path: Path | None = None, pid: int | None = None, kill: bool = True
+) -> dict:
+    """Wait until the editor has fully exited; returns {"exited": bool, "killed": bool}.
+
+    With pid, waits on that process only and, on timeout, force-kills only it (when kill).
+    Without pid (shutdown --all), polls the configured check-ue-process-command for every editor of the
+    local project and force-kills each one left on timeout. "exited" is True when nothing remains,
+    "killed" when a force-kill was attempted. When the process-check command is not configured, returns
+    immediately with exited=True (best-effort, legacy behavior).
     """
+    if pid is not None:
+        return _wait_for_pid_exit(pid, timeout, config_path, kill)
     procs = _check_ue_processes(config_path)
     if procs is None:
         return {"exited": True, "killed": False}
@@ -3462,26 +3646,50 @@ def cmd_build_start(args: argparse.Namespace) -> None:
 
 
 def cmd_shutdown_build_restart(args: argparse.Namespace) -> None:
-    from .client import shutdown as client_shutdown
-    from .errors import BridgeError
-
     config_path = _bind_config(args)
     _refuse_foreign_explicit_bridge("shutdown-build-restart")
     print("Requesting editor shutdown...", file=sys.stderr)
-    try:
-        client_shutdown()
-        print("Editor shutdown requested successfully. Waiting for it to close...", file=sys.stderr)
-    except BridgeError as exc:
-        print(f"Warning: could not shut down editor (already closed or unreachable): {exc.message}", file=sys.stderr)
-
-    # Ensure the editor process is fully gone before rebuilding so we don't race
-    # file locks (Live Coding lock, bound port, etc.).
-    _wait_for_ue_shutdown(args.wait_timeout, config_path)
+    # The editor must be gone before rebuilding so we don't race file locks (Live Coding lock, bound port, etc.).
+    if getattr(args, "all", False):
+        payload = _shutdown_every_editor(args.wait_timeout, config_path)
+    else:
+        payload = _shutdown_own_editor(args.wait_timeout, getattr(args, "pid", None), config_path)
+    if not payload.get("success"):
+        print("error: the editor was not stopped; not rebuilding.", file=sys.stderr)
+        _print_json({**payload, "command": "shutdown-build-restart"})
+        sys.exit(1)
+    print(payload.get("message", "Editor stopped."), file=sys.stderr)
 
     cmd_build_start(args)
 
 
 # -- Argument parser -----------------------------------------------------------
+
+
+def _add_shutdown_target_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Seconds to wait for the editor process to exit before force-killing it (default: 30).",
+    )
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument(
+        "--pid",
+        type=int,
+        metavar="N",
+        help=(
+            "The editor process to stop. Asked through its bridge when the bridge found reports this pid, "
+            "else ended directly; also ended when the shutdown request fails. Must be an editor of this project "
+            "when check-ue-process-command is configured."
+        ),
+    )
+    target.add_argument(
+        "--all",
+        action="store_true",
+        help="Old behaviour: wait on and force-kill every editor of this checkout, not only the bridge's.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3617,20 +3825,19 @@ def build_parser() -> argparse.ArgumentParser:
     # shutdown
     p_shutdown = sub.add_parser(
         "shutdown",
-        help="Request the Unreal Editor and bridge server to shut down and close.",
+        help="Shut down this project's editor (only the one whose bridge the command reaches).",
         description=(
-            "Sends a POST request to the bridge server asking it to shut down the Unreal Editor, "
-            "then waits (polling check-ue-process-command) until the process has fully exited, "
-            "force-killing it if it does not exit within --wait-timeout."
+            "Stops one editor: the one whose bridge this command reaches (the project's instance.json, or "
+            "--server). Its pid is read from the bridge (GET /bridge), the bridge is asked to shut the editor "
+            "down, and only that process is waited on and force-killed after --wait-timeout. Other editors of "
+            "the checkout (test editors, other agents' editors) are never touched.\n"
+            "When the request fails, nothing is killed: pass --pid N to end that editor anyway. --pid N alone "
+            "also stops an editor whose bridge is not the one found (it is ended directly). --all restores the "
+            "old behaviour: wait on and force-kill every editor of this checkout."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_shutdown.add_argument(
-        "--wait-timeout",
-        type=float,
-        default=30.0,
-        metavar="SEC",
-        help="Seconds to wait for the editor process to exit before force-killing (default: 30).",
-    )
+    _add_shutdown_target_args(p_shutdown)
     p_shutdown.set_defaults(func=cmd_shutdown)
 
     # -------------------------------------------------------------------------
@@ -6064,9 +6271,11 @@ def build_parser() -> argparse.ArgumentParser:
     # shutdown-build-restart
     p_sbr = sub.add_parser(
         "shutdown-build-restart",
-        help="Shut down the running editor, rebuild, and restart it.",
+        help="Shut down this project's editor, rebuild, and restart it.",
         description=(
-            "Requests editor shutdown via the bridge, runs the build command, restarts the editor, and monitors logs for Angelscript errors.\n"
+            "Shuts down this project's editor like 'shutdown' (only that editor; --pid / --all as there), runs the "
+            "build command, restarts the editor, and monitors logs for Angelscript errors. Does not build when the "
+            "editor could not be stopped.\n"
             "Same exit statuses as build-start: 2 = 'angelscript_errors' (editor waiting in the compile-error dialog), 1 = failure."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -6090,13 +6299,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SEC",
         help="Polling interval in seconds for the bridge health check (default: 2.0)",
     )
-    p_sbr.add_argument(
-        "--wait-timeout",
-        type=float,
-        default=30.0,
-        metavar="SEC",
-        help="Seconds to wait for the editor process to exit before force-killing it, prior to rebuilding (default: 30).",
-    )
+    _add_shutdown_target_args(p_sbr)
     p_sbr.add_argument(
         "--nullrhi",
         action="store_true",

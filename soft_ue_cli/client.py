@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .discovery import get_server_url
+from .errors import BridgeError, ErrorKind
 
 _id_counter = itertools.count(1)
 
@@ -201,11 +202,20 @@ def health_check(timeout: float = 5.0, url: str | None = None) -> dict[str, Any]
         return {"error": str(exc)}
 
 
-def shutdown(timeout: float | None = None) -> dict[str, Any]:
-    """Send shutdown request to SoftUEBridge server."""
-    from .errors import BridgeError, ErrorKind
+class ShutdownFailed(BridgeError):
+    """The shutdown request failed. maybe_delivered: the bridge may still have received it (timeout, cut reply)."""
 
-    url = get_server_url()
+    def __init__(self, message: str, maybe_delivered: bool) -> None:
+        super().__init__(ErrorKind.EXPECTED, message, "shutdown", {})
+        self.maybe_delivered = maybe_delivered
+
+
+def shutdown(timeout: float | None = None, url: str | None = None) -> dict[str, Any]:
+    """Send the JSON-RPC shutdown request to the bridge at url (default: the discovered one).
+
+    Discovery errors propagate as BridgeError; a failed request raises ShutdownFailed (also a BridgeError).
+    """
+    url = url or get_server_url()
     endpoint = f"{url}/bridge"
     timeout = timeout if timeout is not None else 5.0
 
@@ -219,22 +229,19 @@ def shutdown(timeout: float | None = None) -> dict[str, Any]:
     try:
         response = httpx.post(endpoint, json=payload, timeout=timeout)
         response.raise_for_status()
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise ShutdownFailed(f"Shutdown failed: cannot connect to {endpoint} ({exc})", False)
+    except httpx.HTTPStatusError as exc:
+        raise ShutdownFailed(f"Shutdown failed: HTTP {exc.response.status_code}", False)
+    except httpx.HTTPError as exc:  # read timeout, connection cut: the editor may be shutting down
+        raise ShutdownFailed(f"Shutdown failed: {type(exc).__name__}: {exc}", True)
+    try:
         data = response.json()
-        if "error" in data:
-            err = data["error"]
-            raise BridgeError(
-                kind=ErrorKind.EXPECTED,
-                message=str(err.get("message", err)),
-                tool_name="shutdown",
-                arguments={},
-            )
-        return data.get("result", {})
-    except Exception as exc:
-        if isinstance(exc, BridgeError):
-            raise exc
-        raise BridgeError(
-            kind=ErrorKind.EXPECTED,
-            message=f"Shutdown failed: {exc}",
-            tool_name="shutdown",
-            arguments={},
-        )
+    except Exception:
+        raise ShutdownFailed("Shutdown failed: the bridge sent no JSON reply", True)
+    if isinstance(data, dict) and "error" in data:
+        err = data["error"]
+        raise ShutdownFailed(str(err.get("message", err) if isinstance(err, dict) else err), False)
+    result = data.get("result", {}) if isinstance(data, dict) else {}
+    return result if isinstance(result, dict) else {}
+

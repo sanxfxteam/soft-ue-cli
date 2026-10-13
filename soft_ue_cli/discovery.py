@@ -289,6 +289,13 @@ def bridge_project_dir(url: str, timeout: float = 2.0) -> str | None:
     return reported if isinstance(reported, str) and reported else None
 
 
+def instance_pid(project_dir: Path) -> int | None:
+    """pid recorded in the project's instance.json (unchecked), or None."""
+    data = _read_instance(_instance_file(project_dir))
+    pid = data.get("pid") if data else None
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
 def project_bridge_url(project_dir: Path) -> str:
     """URL of the project's own live bridge.
 
