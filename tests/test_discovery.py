@@ -111,11 +111,14 @@ def test_get_server_url_port_env(monkeypatch):
 
 
 def test_get_server_url_invalid_port_falls_through(monkeypatch, tmp_path):
+    from soft_ue_cli.discovery import NoProjectFound
+
     monkeypatch.delenv("SOFT_UE_BRIDGE_URL", raising=False)
     monkeypatch.setenv("SOFT_UE_BRIDGE_PORT", "not-a-number")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("soft_ue_cli.discovery._find_instance_file", lambda: None)
-    assert get_server_url() == "http://127.0.0.1:18080"
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    with pytest.raises(NoProjectFound):
+        get_server_url()
 
 
 def test_get_server_url_instance_file(monkeypatch, tmp_path):
@@ -128,12 +131,16 @@ def test_get_server_url_instance_file(monkeypatch, tmp_path):
     assert get_server_url() == "http://127.0.0.1:8765"
 
 
-def test_get_server_url_default_fallback(monkeypatch, tmp_path):
+def test_get_server_url_has_no_default_fallback(monkeypatch, tmp_path):
+    from soft_ue_cli.discovery import NoProjectFound
+
     monkeypatch.delenv("SOFT_UE_BRIDGE_URL", raising=False)
     monkeypatch.delenv("SOFT_UE_BRIDGE_PORT", raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("soft_ue_cli.discovery._find_instance_file", lambda: None)
-    assert get_server_url() == "http://127.0.0.1:18080"
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    monkeypatch.setattr("httpx.get", _no_http)
+    with pytest.raises(NoProjectFound, match="no soft-ue.config.json or .uproject in"):
+        get_server_url()
 
 
 def test_get_server_url_url_beats_port(monkeypatch):
@@ -335,10 +342,46 @@ def test_explicit_port_bypasses_discovery(tmp_path, monkeypatch, no_env):
     assert get_server_url() == "http://127.0.0.1:18081"
 
 
-def test_no_project_at_all_keeps_the_documented_default(tmp_path, monkeypatch, no_env):
+def test_no_project_at_all_fails_instead_of_using_18080(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import NoProjectFound
+    from soft_ue_cli.errors import BridgeError
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
-    assert get_server_url() == "http://127.0.0.1:18080"
+    monkeypatch.setattr("httpx.get", _no_http)
+    with pytest.raises(NoProjectFound) as exc:
+        get_server_url()
+    assert isinstance(exc.value, BridgeError)
+    assert str(tmp_path.resolve()) in exc.value.message
+    assert "cd " not in exc.value.message
+
+
+def test_no_project_names_the_project_one_folder_down(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import NoProjectFound
+
+    _project(tmp_path, "ProjectShiva")
+    (tmp_path / "Tools").mkdir()
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    with pytest.raises(NoProjectFound, match="cd ProjectShiva"):
+        get_server_url()
+
+
+def test_no_project_names_a_config_only_folder_down(tmp_path, monkeypatch, no_env):
+    from soft_ue_cli.discovery import projects_one_level_down
+
+    (tmp_path / "Game").mkdir()
+    (tmp_path / "Game" / "soft-ue.config.json").write_text("{}")
+    (tmp_path / "Docs").mkdir()
+    assert projects_one_level_down(tmp_path) == [tmp_path / "Game"]
+
+
+def test_explicit_server_needs_no_project(tmp_path, monkeypatch, no_env):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("soft_ue_cli.discovery._nearest_project_dir", lambda start: None)
+    monkeypatch.setenv("SOFT_UE_BRIDGE_URL", "http://127.0.0.1:18191")
+    assert get_server_url() == "http://127.0.0.1:18191"
 
 
 def test_requested_port(monkeypatch, no_env):

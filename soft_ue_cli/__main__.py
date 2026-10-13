@@ -2187,6 +2187,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
 def cmd_check_setup(args: argparse.Namespace) -> None:
     """Verify plugin files, project settings, and bridge server reachability."""
     project_path = Path(args.project_path).expanduser().resolve() if args.project_path else Path.cwd()
+    if args.project_path:
+        from .discovery import set_config_path
+
+        set_config_path(project_path / "soft-ue.config.json")  # the bridge check targets that project
 
     ok = "[OK]  "
     fail = "[FAIL]"
@@ -2879,14 +2883,47 @@ def _load_config_command(key: str, config_path: Path | None = None) -> tuple[str
     return cmd, path.parent
 
 
+_PROCESS_CHECK_TIMEOUT = 30.0
+_ANGELSCRIPT_CHECK_TIMEOUT = 120.0
+
+
+def _run_config_command(cmd: str, cwd: Path | None, timeout: float) -> tuple[int, str, str] | None:
+    """Run a soft-ue.config.json command; (returncode, stdout, stderr), or None when it failed to run or
+    timed out. On a timeout the whole process tree is ended: a plain kill would only end the shell, and
+    its child would keep the output pipes (and this call) open."""
+    import subprocess
+
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=str(cwd) if cwd else None, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+        )
+    except Exception:
+        return None
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f"Warning: '{cmd}' did not finish within {timeout:g}s; stopped it.", file=sys.stderr)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=15
+            )
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        return None
+    return proc.returncode, out or "", err or ""
+
+
 def _check_ue_processes(config_path: Path | None = None) -> list[dict] | None:
     """Run the configured check-ue-process-command and return the process list.
 
-    Returns None when the command is not configured, so callers can fall back to
+    Returns None when the command is not configured (or fails or times out), so callers can fall back to
     legacy behavior. Returns an empty list when no Unreal processes are running.
     """
     import re
-    import subprocess
 
     cmd, cwd = _load_config_command("check-ue-process-command", config_path)
     if not cmd:
@@ -2894,12 +2931,12 @@ def _check_ue_processes(config_path: Path | None = None) -> list[dict] | None:
     # Ensure JSON output regardless of how the command is configured.
     if "--json" not in cmd:
         cmd = f"{cmd} --json"
-    try:
-        proc = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True)
-    except Exception:
+    ran = _run_config_command(cmd, cwd, _PROCESS_CHECK_TIMEOUT)
+    if ran is None:
         return None
+    stdout = ran[1]
 
-    match = re.search(r"[\[{][\s\S]*[\]}]", proc.stdout or "")
+    match = re.search(r"[\[{][\s\S]*[\]}]", stdout)
     if not match:
         return []
     try:
@@ -2916,19 +2953,16 @@ def _check_angelscript(config_path: Path | None = None) -> tuple[bool, str] | No
 
     Returns (ok, output) where ok is True when AngelScript compiled cleanly
     (exit code 0). output is the combined stdout/stderr text. Returns None when
-    the command is not configured.
+    the command is not configured, fails to run or times out.
     """
-    import subprocess
-
     cmd, cwd = _load_config_command("check-angelscript-command", config_path)
     if not cmd:
         return None
-    try:
-        proc = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True)
-    except Exception:
+    ran = _run_config_command(cmd, cwd, _ANGELSCRIPT_CHECK_TIMEOUT)
+    if ran is None:
         return None
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode == 0, output
+    returncode, stdout, stderr = ran
+    return returncode == 0, stdout + stderr
 
 
 def cmd_check_angelscript(args: argparse.Namespace) -> None:
@@ -3009,18 +3043,11 @@ def _kill_ue_process(pid: int, config_path: Path | None = None) -> bool:
     Runs the command with `--kill <pid>` appended. Best-effort: returns False
     (without raising) when the command is unconfigured or the kill fails.
     """
-    import subprocess
-
     cmd, cwd = _load_config_command("check-ue-process-command", config_path)
     if not cmd:
         return False
-    try:
-        proc = subprocess.run(
-            f"{cmd} --kill {pid}", shell=True, cwd=str(cwd), capture_output=True, text=True
-        )
-    except Exception:
-        return False
-    return proc.returncode == 0
+    ran = _run_config_command(f"{cmd} --kill {pid}", cwd, _PROCESS_CHECK_TIMEOUT)
+    return ran is not None and ran[0] == 0
 
 
 def _wait_for_ue_shutdown(timeout: float, config_path: Path | None = None) -> dict:
@@ -3464,7 +3491,7 @@ def build_parser() -> argparse.ArgumentParser:
             "By default the URL comes from the SOFT_UE_BRIDGE_URL env var, then SOFT_UE_BRIDGE_PORT, "
             "then the project's own .soft-ue-bridge/instance.json (project: --config's folder, else the "
             "nearest folder above cwd with a .uproject; a missing or stale file means its editor is not "
-            "running). http://127.0.0.1:18080 only when no project is found."
+            "running). With no project found and none of these, bridge commands fail (no default port)."
         ),
     )
     parser.add_argument(
@@ -6093,7 +6120,13 @@ def main() -> None:
     if hasattr(args, "asset_path") and args.asset_path:
         args.asset_path = _fix_msys_asset_path(args.asset_path)
 
-    args.func(args)
+    from .errors import BridgeError
+
+    try:
+        args.func(args)
+    except BridgeError as exc:  # handlers that call the bridge directly (no project, editor not running, ...)
+        print(f"error: {exc.message}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ run for, so the target is resolved per project:
    ``.soft-ue-bridge/instance.json`` is used: missing, written by another checkout, or written by an editor
    that has exited, it means "this project's editor is not running" (``EditorNotRunning``); a bridge on its
    port that reports another project is refused (``WrongProjectBridge``). There is no port fallback.
-3. Only when no project can be resolved at all: ``http://127.0.0.1:18080``.
+3. No project resolved and nothing explicit: ``NoProjectFound`` (no fallback to 18080 either).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from urllib.parse import urlsplit
 
 from .errors import BridgeError, ErrorKind
 
-DEFAULT_URL = "http://127.0.0.1:18080"
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 _config_path: Path | None = None
@@ -56,6 +55,22 @@ class WrongProjectBridge(BridgeError):
         self.url = url
         self.project_dir = project_dir
         self.reported = reported
+
+
+class NoProjectFound(BridgeError):
+    """No project above the cwd and no explicit server: there is no editor to talk to."""
+
+    def __init__(self, cwd: Path, below: list[Path] | None = None) -> None:
+        message = f"no soft-ue.config.json or .uproject in {cwd} or above, so there is no project editor to talk to."
+        if below:
+            names = ", ".join(str(p.relative_to(cwd)) for p in below)
+            message += f" Found a project one folder down: cd {below[0].relative_to(cwd)}" + (
+                f" (candidates: {names})" if len(below) > 1 else ""
+            ) + "."
+        message += " Or pass --server / SOFT_UE_BRIDGE_PORT to reach a specific editor."
+        super().__init__(ErrorKind.EXPECTED, message, "", {})
+        self.cwd = cwd
+        self.below = below or []
 
 
 # -- explicit server -------------------------------------------------------------
@@ -115,6 +130,24 @@ def _nearest_project_dir(start: Path) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def projects_one_level_down(start: Path) -> list[Path]:
+    """Project folders directly below start (to name them when the cwd is one level too high)."""
+    found = []
+    try:
+        children = sorted(start.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        try:
+            if child.is_dir() and (any(child.glob("*.uproject")) or (child / "soft-ue.config.json").is_file()):
+                found.append(child)
+        except OSError:
+            continue
+    return found
 
 
 def resolve_project_dir() -> Path | None:
@@ -252,11 +285,12 @@ def get_server_url() -> str:
     """Base URL of the bridge this command talks to (see the module docstring for the order).
 
     Raises EditorNotRunning / WrongProjectBridge (both BridgeError) when a project was resolved and its own
-    editor is not reachable: never falls back to another editor's port.
+    editor is not reachable, NoProjectFound when no project was resolved: never falls back to a default port.
     """
     if url := explicit_server_url():
         return url
     project = resolve_project_dir()
     if project is None:
-        return DEFAULT_URL
+        cwd = Path.cwd().resolve()
+        raise NoProjectFound(cwd, projects_one_level_down(cwd))
     return project_bridge_url(project)
