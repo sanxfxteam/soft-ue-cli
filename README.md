@@ -164,7 +164,7 @@ These commands are fully permitted to run in both the CLI client and the Unreal 
 | **Setup & Diagnostics** | `status` | Health check -- returns server status |
 | | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
 | | `check-angelscript` | Run the configured AngelScript compilation check and print any errors |
-| | `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
+| | `shutdown` | Shut down this project's editor only (the bridge's own pid), wait until it has exited (force-kills it on `--wait-timeout`); `--pid N` / `--all` |
 | **Asset & Visual Capture** | `capture-screenshot` | Capture the editor viewport, PIE window, or a specific editor panel |
 | | `capture-viewport` | Capture the current viewport |
 | **Engine Control & Scripting** | `run-python-script` | Execute a Python script inside UE's embedded Python interpreter |
@@ -188,7 +188,7 @@ These commands are fully permitted to run in whitelisted mode (both in the CLI c
 | `check-setup` | Verify plugin files, .uproject settings, and bridge server reachability |
 | `check-angelscript` | Run the configured AngelScript compilation check and print any errors |
 | `status` | Health check -- returns server status |
-| `shutdown` | Request shutdown, then wait until the editor process has fully exited (force-kills on `--wait-timeout`) |
+| `shutdown` | Shut down this project's editor only (the bridge's own pid), wait until it has exited (force-kills it on `--wait-timeout`); `--pid N` / `--all` |
 
 #### Play-In-Editor & Scripting
 
@@ -313,8 +313,8 @@ These commands are blocked/restricted when whitelisted mode is active (enforced 
 
 | Command | Description |
 |---------|-------------|
-| `pie-session` | Start, stop, pause, resume PIE -- also query actor state during play |
-| `pie-tick` | Start PIE if needed and advance the world deterministically by frame count |
+| `pie-session` | Start, stop, pause, resume PIE -- also query actor state during play (`wait-for` is **broken**: it freezes the editor while it polls) |
+| `pie-tick` | **Broken** (blocks the game thread, never ticks, freezes the editor): start PIE if needed and advance the world by frame count |
 | `inspect-anim-instance` | Snapshot a target actor's live `UAnimInstance` state, montages, slot activity, and blend weights |
 | `inspect-pawn-possession` | Inspect controller/pawn links, AI auto-possession, and hidden state in a running world |
 | `trigger-input` | Send input events to a running game (PIE or packaged build) |
@@ -390,7 +390,7 @@ These commands are blocked/restricted when whitelisted mode is active (enforced 
 |---------|-------------|
 | `build-and-relaunch` | Trigger a full C++ rebuild and optionally relaunch the editor (`--wait` monitors staged progress and reports timeout diagnostics) |
 | `build-start` | Run the `build-command` from `soft-ue.config.json`, launch the editor with its `start-command`, and report Angelscript errors until the bridge is ready. `--nullrhi` starts the editor without rendering (appends `-nullrhi` to the `start-command` for this launch only): no window, almost no video memory |
-| `shutdown-build-restart` | Shut the editor down, then do what `build-start` does (same `--nullrhi`) |
+| `shutdown-build-restart` | Shut this project's editor down like `shutdown` (same `--pid` / `--all`; no build when it could not be stopped), then do what `build-start` does (same `--nullrhi`) |
 | `reload-bridge-module` | Reload the bridge editor module from disk without a full editor restart |
 | `set-viewport-camera` | Set editor viewport camera position, rotation, or preset view (top/front/right/perspective) |
 
@@ -451,6 +451,8 @@ soft-ue-cli validate-class-path /Game/Characters/BP_Hero.BP_Hero_C
 ```
 
 ### Tick PIE and inspect animation state
+
+`pie-tick` is currently broken (it blocks the game thread, so the frames never tick); the example shows the intended use.
 
 ```bash
 soft-ue-cli pie-tick --frames 30
@@ -601,13 +603,27 @@ soft-ue-cli insights-analyze latest --analysis-type cpu
 soft-ue-cli shutdown
 ```
 
-`shutdown` requests a clean shutdown via the bridge, then polls the configured
-`check-ue-process-command` until the editor process for the local project has
-fully exited. If it doesn't exit within `--wait-timeout` seconds (default 30),
-the process tree is force-killed and the result JSON reports `"killed": true`.
+`shutdown` stops one editor: the one whose bridge the command reaches (this
+project's `instance.json`, or `--server`). It reads that editor's `pid` from the
+bridge (`GET /bridge`), asks the bridge to shut down, and waits for that process
+only. If it doesn't exit within `--wait-timeout` seconds (default 30), that
+process tree is force-killed and the result JSON reports `"killed": true`. Other
+editors of the checkout (headless test editors, other agents' editors) are never
+touched.
+
+When the shutdown request fails, nothing is killed (`SHUTDOWN_REQUEST_FAILED` or
+`EDITOR_STILL_RUNNING`, exit 1, with the `pids` involved). `--pid N` names the
+editor to stop: it is asked through its bridge when the bridge found reports that
+pid, and ended directly otherwise or when the request fails (it must be an editor
+of this project when `check-ue-process-command` is configured). `--all` keeps the
+old behaviour: wait on, and force-kill, every editor of this checkout.
+`shutdown-build-restart` takes the same options and does not build when the
+editor could not be stopped.
 
 ```bash
 soft-ue-cli shutdown --wait-timeout 60
+soft-ue-cli shutdown --pid 12345      # a hung editor, or one whose bridge is not this project's instance.json
+soft-ue-cli shutdown --all            # every editor of this checkout (old behaviour)
 ```
 
 ### Use as an MCP server (Claude Desktop, Cursor, etc.)
@@ -654,9 +670,15 @@ Several editors can run at once (different projects, git worktrees of one projec
    - its `pid` is alive and its `project_dir` is this project: the bridge on its port is used, unless that bridge reports another project, which is refused ("belongs to another project");
    - missing, written by another checkout's editor, or its `pid` has exited (an editor killed without cleanup): this project's editor is **not running**. Commands fail with that message, `status` reports `not_running`, `build-start` builds and launches. The stale file is ignored, not deleted.
    - There is **no fallback to 18080** once a project is resolved: that port usually belongs to another checkout's editor.
-3. `http://127.0.0.1:18080` only when no project can be resolved at all (run outside any project folder).
+3. No project resolved (run outside any project folder, e.g. a repository root above the project) and none of the overrides: bridge commands fail with "no soft-ue.config.json or .uproject in <cwd> or above", naming a project one folder down when there is one ("cd ProjectShiva"). There is no default port.
 
-`shutdown`, `shutdown-build-restart` and `build-start` also refuse an explicit `--server` / `SOFT_UE_BRIDGE_URL` / `SOFT_UE_BRIDGE_PORT` whose bridge reports another project (`BRIDGE_OF_ANOTHER_PROJECT`), and only wait on, or kill, editor processes whose command line opens this project's `.uproject`.
+An `instance.json` with the plugin's `pid` and `project_dir`, whose `pid` is the live process that wrote it, is used without asking the bridge (the plugin deletes the file when its bridge stops, and a `pid` reused by a process started after the file was written counts as exited). Older files without them are checked with a `GET /bridge` (2 s) before the call.
+
+`shutdown`, `shutdown-build-restart` and `build-start` also refuse an explicit `--server` / `SOFT_UE_BRIDGE_URL` / `SOFT_UE_BRIDGE_PORT` whose bridge reports another project (`BRIDGE_OF_ANOTHER_PROJECT`). `shutdown` and `shutdown-build-restart` only wait on, or kill, the editor whose bridge they reached (or `--pid`); `--all` extends that to every editor process whose command line opens this project's `.uproject`.
+
+### Lost or empty replies
+
+A bridge that closes the connection without a full reply, sends an empty body, or a reply with neither `result` nor `error` is an error (exit 1) saying that the command may have run: check the editor log. That happens when the editor is busy and the caller gave up (the editor then logs `socket_send_failure`). `run-python-script` notes on stderr when the script succeeded but printed nothing (`output` only carries `print()`; add `--capture-logs` for the UE log lines it caused).
 
 ### Conditional Compilation for Teams
 

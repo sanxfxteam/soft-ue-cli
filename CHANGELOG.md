@@ -2,6 +2,22 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.40.0] - 2026-10-13
+
+### Changed
+- **No silent 18080 fallback outside a project.** With no `soft-ue.config.json` / `.uproject` in the current folder or above, and no `--server` / `SOFT_UE_BRIDGE_URL` / `SOFT_UE_BRIDGE_PORT`, bridge commands now fail at once with "no soft-ue.config.json or .uproject in <cwd> or above", naming a project one folder down ("cd ProjectShiva"). Before, they drove whatever editor held 18080 (`shutdown` stopped it), or waited `--test-timeout` + 30 s on a busy one and looked frozen. `status`, `check-setup` and the `config` commands report it instead of failing; `shutdown` reports `NO_PROJECT`. `check-setup <path>` now checks that project's bridge.
+- **`shutdown` stops only its own editor.** It reads the target's `pid` from the bridge (`GET /bridge`; a busy bridge falls back to the checked `instance.json` pid), sends the shutdown request to that bridge, and waits on and force-kills only that process. Other editors of the checkout (headless test editors, other agents' editors) are no longer waited on or killed. When the request fails nothing is killed (`SHUTDOWN_REQUEST_FAILED` / `EDITOR_STILL_RUNNING`, exit 1, with the `pids`); with no or a stale `instance.json` nothing is killed either. New `--pid N`: the editor to stop, asked through its bridge when the bridge found reports that pid, otherwise (or when the request fails) ended directly; it must be an editor of this project when `check-ue-process-command` is configured. New `--all`: the old behaviour (wait on and force-kill every editor of this checkout). A bridge that reports no pid (older plugin) is waited on until it stops answering, never killed.
+- `shutdown-build-restart` takes the same `--pid` / `--all` and does not build when the editor could not be stopped (exit 1, the shutdown payload with `"command": "shutdown-build-restart"`).
+- **No `GET /bridge` probe before every call.** An `instance.json` with the plugin's `pid` and `project_dir`, whose `pid` is the live process that wrote it, is trusted without asking the bridge (the plugin deletes the file when its bridge stops). A busy editor used to answer the 2 s probe into a closed socket (`socket_send_failure` in its log). A `pid` reused by a process started after the file was written now counts as exited (Windows). Older files without `pid` / `project_dir` are still probed.
+- `run-automation --test-timeout` help: it is the timeout for all the tests of the call together, not per test (default without it: 60 s per matched test).
+- `pie-tick` and `pie-session wait-for` are marked **broken** in `--help`: the bridge blocks the game thread while they wait, so the PIE world never ticks and the editor freezes until their timeout.
+
+### Fixed
+- A bridge that closes or cuts the connection (`RemoteProtocolError`, `ReadError`, `WriteError`, ...) gave a raw httpx traceback; it is now an error (exit 1) saying the command may have run and to check the editor log. A read timeout says the same. An empty body, a reply that is not a JSON object, and a reply with neither `result` nor `error` are errors too (the last one used to exit 0 with no output).
+- `run-python-script` prints a `note:` on stderr when the script succeeded but printed nothing, or when the reply has no `success` field.
+- `check-ue-process-command`, its `--kill` and `check-angelscript-command` have timeouts (30 s / 120 s); on a timeout the whole shell tree is ended so a child holding the output pipes cannot keep the call open.
+- A handler that calls the bridge directly no longer ends with a traceback on a bridge error: `error: <message>`, exit 1.
+
 ## [1.39.0] - 2026-10-11
 
 ### Added

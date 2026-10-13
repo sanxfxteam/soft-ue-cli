@@ -5,7 +5,7 @@ description: How to use the soft-ue-cli command-line interface to inspect, edit,
 
 # Using soft-ue-cli
 
-`soft-ue-cli` is a powerful tool to inspect, modify, and test Unreal Engine projects either locally (offline) or via a live HTTP bridge plugin (online) running on port `18080` (default).
+`soft-ue-cli` is a powerful tool to inspect, modify, and test Unreal Engine projects either locally (offline) or via a live HTTP bridge plugin (online) running on port `18080` (default). Run bridge commands from the project folder (where `soft-ue.config.json` / the `.uproject` is): outside a project they fail ("no soft-ue.config.json or .uproject in <cwd> or above ... cd ProjectShiva") instead of using 18080.
 
 ## Diagnostics
 Verify the plugin installation and connection using these commands:
@@ -16,20 +16,20 @@ Verify the plugin installation and connection using these commands:
 When making C++ changes or editing Angelscript scripts, use these commands to compile and restart the editor:
 - `soft-ue-cli build-start` -- runs the build command, launches the editor, and tail-follows the log file in real-time, printing any Angelscript compilation errors (`LogAngelscript: Error:`) until the bridge becomes ready. It **refuses to run when a bridge is already up** (`BRIDGE_ALREADY_RUNNING`, exit 1) because the build would race the live editor's file locks; use `shutdown-build-restart` or `shutdown` first. It also refuses (`EDITOR_ALREADY_RUNNING`) while this project's editor process is still loading.
 - **Which editor**: run the CLI from the project folder (or pass `--config`). It talks only to that project's editor, found through `<project>/.soft-ue-bridge/instance.json`; with several editors open (git worktrees, other projects) it never falls back to port 18080. A missing or stale `instance.json` (its `pid` exited) means "not running". `--server` / `SOFT_UE_BRIDGE_PORT` bypass discovery, but `shutdown`, `build-start` and `shutdown-build-restart` refuse a bridge of another project (`BRIDGE_OF_ANOTHER_PROJECT`).
-- `soft-ue-cli shutdown-build-restart` -- requests editor shutdown via the bridge, waits until the editor process has fully exited (polling `check-ue-process-command`, force-killing after `--wait-timeout`), runs the build command, and launches the editor while monitoring for errors.
+- `soft-ue-cli shutdown-build-restart` -- shuts down this project's editor like `shutdown` (only that editor; `--pid` / `--all` as there), runs the build command, and launches the editor while monitoring for errors. It does not build when the editor could not be stopped.
 - `--nullrhi` (both commands) -- start the editor without rendering (`-nullrhi`): no window, almost no video memory. It appends `-nullrhi` to the `start-command` for this launch only (not to the build), so there is no need to edit `soft-ue.config.json`; the `start-command` must forward extra arguments to the editor. Example: `soft-ue-cli build-start --nullrhi`.
 - Startup outcomes of both commands (JSON on stdout at exit, so the result survives `| tail`): `ready` (exit 0); `angelscript_errors` (exit 2) -- the initial Angelscript compile failed and the editor is waiting in the Angelscript compile-error dialog; the JSON lists `angelscript_errors` (first 20, `angelscript_error_count` total). Fix the scripts: the dialog hot-reloads them and the editor keeps starting on its own, no restart needed; then run `soft-ue-cli status`. `editor_exited` (exit 1, with `log_tail`) -- the editor crashed or never started. `timeout` (exit 1) -- no bridge within `--timeout`.
-- `soft-ue-cli shutdown` -- requests editor shutdown via the bridge and waits until the editor process has fully exited. Force-kills the process tree if it doesn't exit within `--wait-timeout` seconds (default 30) and reports `"killed": true`.
+- `soft-ue-cli shutdown` -- stops only the editor whose bridge it reaches (this project's `instance.json`, or `--server`): reads its pid from the bridge, requests the shutdown, waits for that process and force-kills it after `--wait-timeout` seconds (default 30, reports `"killed": true`). Other editors of the checkout (test editors, other agents') are never touched. When the request fails nothing is killed (`SHUTDOWN_REQUEST_FAILED` / `EDITOR_STILL_RUNNING`, exit 1): pass `--pid N` to end that editor. `--all` = old behaviour, every editor of this checkout.
 
 ## Running Automation Tests
 Automation spec/integration tests can be run from the command line:
 - `soft-ue-cli run-automation <TestPattern>` -- runs tests via the Session Frontend and prints PASS/FAIL status. Supports wildcard filters (e.g. `ProjectShiva.Abilities.*`). Before running, it executes `check-angelscript-command` (from `soft-ue.config.json`); if AngelScript has compilation errors it prints them and aborts with exit 1 without running any tests.
-- Overrides: Use `--test-timeout <seconds>` to set a custom maximum execution limit.
+- Overrides: `--test-timeout <seconds>` is the timeout for all the tests of the call together, not per test (default without it: 60 s per matched test); on timeout the result is `TIMED OUT`.
 - Note: On first launch, the local automation controller worker might be inactive. `run-automation` includes self-healing logic that automatically bootstraps the controller if 0 tests are discovered initially.
 
 ## Scripting
 Run scripts inside the editor through the bridge:
-- `soft-ue-cli run-python-script --script "..."` (or `--script-path file.py`) -- executes Python in the editor's Python environment. Supports `--capture-logs` (optionally filtered by `--log-filter` or `--log-category`) to capture and print UE console logs emitted during execution, and `--json` to output raw JSON results instead of plaintext output.
+- `soft-ue-cli run-python-script --script "..."` (or `--script-path file.py`) -- executes Python in the editor's Python environment. Supports `--capture-logs` (optionally filtered by `--log-filter` or `--log-category`) to capture and print UE console logs emitted during execution, and `--json` to output raw JSON results instead of plaintext output. A script that succeeds but prints nothing gets a `note:` on stderr. A lost reply (connection closed, empty body, busy editor past the timeout) is an error saying the command may have run: check the editor log before re-running a script with side effects.
 - `soft-ue-cli run-lua-script --script "..."` (or `--script-path file.lua`) -- executes Lua in-process through the NeoStack plugin's Lua runner (requires the NeoStackAI plugin).
 
 ### Compact toolset access (prefer over Unreal MCP JSON calls)
