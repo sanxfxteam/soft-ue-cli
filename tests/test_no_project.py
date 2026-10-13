@@ -174,3 +174,11 @@ def test_process_check_that_hangs_counts_as_unconfigured(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(main_mod, "_PROCESS_CHECK_TIMEOUT", 1.0)
     assert main_mod._check_ue_processes() is None
+
+
+def test_several_projects_below_are_listed_without_picking_one(tmp_path):
+    from soft_ue_cli.discovery import NoProjectFound
+
+    message = str(NoProjectFound(tmp_path, [tmp_path / "Blank", tmp_path / "ProjectShiva"]))
+    assert "Projects one folder down: Blank, ProjectShiva" in message
+    assert "cd Blank" not in message

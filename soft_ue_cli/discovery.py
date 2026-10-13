@@ -66,11 +66,11 @@ class NoProjectFound(BridgeError):
 
     def __init__(self, cwd: Path, below: list[Path] | None = None) -> None:
         message = f"no soft-ue.config.json or .uproject in {cwd} or above, so there is no project editor to talk to."
-        if below:
+        if below and len(below) == 1:
+            message += f" Found a project one folder down: cd {below[0].relative_to(cwd)}."
+        elif below:
             names = ", ".join(str(p.relative_to(cwd)) for p in below)
-            message += f" Found a project one folder down: cd {below[0].relative_to(cwd)}" + (
-                f" (candidates: {names})" if len(below) > 1 else ""
-            ) + "."
+            message += f" Projects one folder down: {names}; cd into the one whose editor you want."
         message += " Or pass --server / SOFT_UE_BRIDGE_PORT to reach a specific editor."
         super().__init__(ErrorKind.EXPECTED, message, "", {})
         self.cwd = cwd
