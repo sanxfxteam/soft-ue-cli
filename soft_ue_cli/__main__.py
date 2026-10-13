@@ -4892,7 +4892,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ps = sub.add_parser(
         "pie-session",
-        help="Control Play-In-Editor sessions (start, stop, pause, resume, wait-for).",
+        help="Control Play-In-Editor sessions (start, stop, pause, resume, wait-for; wait-for is broken).",
         description=(
             "Actions:\n"
             "  start      — launch PIE (use --mode, --map, --timeout)\n"
@@ -4900,7 +4900,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  pause      — pause the game\n"
             "  resume     — resume a paused game\n"
             "  get-state  — get current PIE state (use --include)\n"
-            "  wait-for   — poll a property until condition is met (use --actor-name, --property, etc.)\n\n"
+            "  wait-for   — BROKEN: poll a property until condition is met (use --actor-name, --property, etc.)\n\n"
+            "KNOWN ISSUE: wait-for (and start's wait for PIE ready) sleep-poll on the editor's game thread, so the\n"
+            "PIE world does not tick while they wait: wait-for only sees a condition that is already true, and it\n"
+            "freezes the editor (bridge included) until its timeout. Poll with get-state or run-python-script.\n\n"
             "EXAMPLES:\n"
             "  soft-ue-cli pie-session start\n"
             "  soft-ue-cli pie-session start --map /Game/Maps/TestLevel --timeout 60\n"
@@ -4928,9 +4931,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pt = sub.add_parser(
         "pie-tick",
-        help="Advance the PIE world by N frames at a pinned delta time.",
+        help="BROKEN: advance the PIE world by N frames at a pinned delta time (never ticks; freezes the editor).",
         description=(
             "Advance the PIE world deterministically. Starts PIE if not running.\n\n"
+            "BROKEN: the bridge blocks the game thread while it waits for the frames, so they never tick: the\n"
+            "editor (bridge included) freezes for 300 s, the CLI gives up after 30 s, and the reply still says\n"
+            "status ok with total_sim_time 0. Auto-start cannot work either. Do not use until the tool is made\n"
+            "asynchronous.\n\n"
             "EXAMPLES:\n"
             "  soft-ue-cli pie-tick --frames 30\n"
             "  soft-ue-cli pie-tick --frames 60 --delta 0.0166666\n"
@@ -6203,8 +6210,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SEC",
         dest="test_timeout",
         help=(
-            "Test execution timeout in seconds (default: 60). "
-            "The HTTP timeout is automatically set to test-timeout + 30s."
+            "Timeout in seconds for all the tests of the call together, not per test "
+            "(default: 60 s per matched test). The HTTP timeout is set to test-timeout + 30 s. "
+            "On timeout the result is TIMED OUT."
         ),
     )
     p_ra.add_argument(
