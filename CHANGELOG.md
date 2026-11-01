@@ -2,6 +2,11 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- A `check-ue-process-command` that exits non-zero (a failed process query) no longer reads as "no Unreal process running": the editor process state is unknown, a `Warning:` line on stderr names the command and its stderr, and `status`, `build-start` and `shutdown` fall back to their checks without the process command. Only exit 0 with `[]` means none running. A check that fails while `shutdown --all` waits on the editors keeps the last processes seen instead of reporting them exited.
+
 ## [1.40.0] - 2026-10-13
 
 ### Changed

@@ -933,6 +933,73 @@ def test_wait_for_build_and_relaunch_timeout_reports_last_stage(tmp_path, capsys
     assert str(log_path) in captured.err
 
 
+# -- _check_ue_processes -------------------------------------------------------
+
+
+def _fake_process_check(monkeypatch, returncode, stdout, stderr=""):
+    from soft_ue_cli import __main__ as main_mod
+
+    calls = []
+    monkeypatch.setattr(main_mod, "_load_config_command", lambda *a, **k: ("python Tools/ue_processes.py", None))
+    monkeypatch.setattr(
+        main_mod, "_run_config_command", lambda cmd, *a, **k: calls.append(cmd) or (returncode, stdout, stderr)
+    )
+    return main_mod, calls
+
+
+def test_check_ue_processes_failed_query_without_output_is_unknown(monkeypatch, capsys):
+    main_mod, calls = _fake_process_check(monkeypatch, 2, "", "process query failed: WMI error\n")
+
+    assert main_mod._check_ue_processes() is None
+    assert calls == ["python Tools/ue_processes.py --json"]
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "python Tools/ue_processes.py --json" in err
+    assert "exit code 2" in err
+    assert "process query failed: WMI error" in err
+
+
+def test_check_ue_processes_failed_query_with_json_is_unknown(monkeypatch):
+    main_mod, _ = _fake_process_check(monkeypatch, 1, "[]")
+
+    assert main_mod._check_ue_processes() is None
+
+
+def test_check_ue_processes_empty_list_means_none_running(monkeypatch, capsys):
+    main_mod, _ = _fake_process_check(monkeypatch, 0, "[]\n")
+
+    assert main_mod._check_ue_processes() == []
+    assert capsys.readouterr().err == ""
+
+
+def test_check_ue_processes_returns_the_listed_processes(monkeypatch):
+    procs = [{"pid": 101, "projectPath": "C:/P/FPS.uproject"}, {"pid": 202, "projectPath": "C:/Q/FPS.uproject"}]
+    main_mod, _ = _fake_process_check(monkeypatch, 0, json.dumps(procs))
+
+    assert main_mod._check_ue_processes() == procs
+
+
+def test_wait_for_ue_shutdown_does_not_count_a_failed_check_as_exited(monkeypatch):
+    # The editor is seen once, then every check fails: it must not be reported as gone.
+    checks, killed = [], []
+
+    def fake_check(*_a, **_k):
+        checks.append(1)
+        return [{"pid": 7}] if len(checks) == 1 else None
+
+    monkeypatch.setattr("soft_ue_cli.__main__._check_ue_processes", fake_check)
+    monkeypatch.setattr("soft_ue_cli.__main__._processes_for_local_project", lambda p: p)
+    monkeypatch.setattr("soft_ue_cli.__main__._kill_ue_process", lambda pid, *a, **k: killed.append(pid) or True)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("time.sleep", lambda _s: clock.__setitem__("now", clock["now"] + 10.0))
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+
+    result = _wait_for_ue_shutdown(5.0)
+
+    assert killed == [7]
+    assert result == {"exited": False, "killed": True}
+
+
 # -- _wait_for_ue_shutdown -----------------------------------------------------
 
 

@@ -3071,7 +3071,8 @@ def _check_ue_processes(config_path: Path | None = None) -> list[dict] | None:
     """Run the configured check-ue-process-command and return the process list.
 
     Returns None when the command is not configured (or fails or times out), so callers can fall back to
-    legacy behavior. Returns an empty list when no Unreal processes are running.
+    legacy behavior. A non-zero exit is a failed query, whatever it printed. Returns an empty list when
+    no Unreal processes are running.
     """
     import re
 
@@ -3084,7 +3085,14 @@ def _check_ue_processes(config_path: Path | None = None) -> list[dict] | None:
     ran = _run_config_command(cmd, cwd, _PROCESS_CHECK_TIMEOUT)
     if ran is None:
         return None
-    stdout = ran[1]
+    returncode, stdout, stderr = ran
+    if returncode != 0:
+        detail = " ".join(stderr.split()) or "no stderr"
+        print(
+            f"Warning: '{cmd}' failed (exit code {returncode}); editor processes unknown: {detail}",
+            file=sys.stderr,
+        )
+        return None
 
     match = re.search(r"[\[{][\s\S]*[\]}]", stdout)
     if not match:
@@ -3255,17 +3263,23 @@ def _wait_for_ue_shutdown(
     Without pid (shutdown --all), polls the configured check-ue-process-command for every editor of the
     local project and force-kills each one left on timeout. "exited" is True when nothing remains,
     "killed" when a force-kill was attempted. When the process-check command is not configured, returns
-    immediately with exited=True (best-effort, legacy behavior).
+    immediately with exited=True (best-effort, legacy behavior). A check that fails mid-wait keeps the
+    last known processes: a failed query is never taken for an exit.
     """
     if pid is not None:
         return _wait_for_pid_exit(pid, timeout, config_path, kill)
     procs = _check_ue_processes(config_path)
     if procs is None:
         return {"exited": True, "killed": False}
+    remaining = _processes_for_local_project(procs)
+
+    def poll(last: list[dict]) -> list[dict]:
+        current = _check_ue_processes(config_path)
+        return last if current is None else _processes_for_local_project(current)
 
     deadline = time.monotonic() + timeout
     while True:
-        remaining = _processes_for_local_project(_check_ue_processes(config_path) or [])
+        remaining = poll(remaining)
         if not remaining:
             print("Editor process exited.", file=sys.stderr)
             return {"exited": True, "killed": False}
@@ -3285,7 +3299,7 @@ def _wait_for_ue_shutdown(
 
     kill_deadline = time.monotonic() + 5.0
     while time.monotonic() < kill_deadline:
-        remaining = _processes_for_local_project(_check_ue_processes(config_path) or [])
+        remaining = poll(remaining)
         if not remaining:
             return {"exited": True, "killed": True}
         time.sleep(1.0)
